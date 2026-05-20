@@ -2198,7 +2198,10 @@ function renderSME(stocks) {
     // Price
     var cp    = s.current_price || s.price;
     var cpStr = cp != null
-      ? '<span style="font-family:monospace;font-weight:700;">&#8377;' + Number(cp).toLocaleString('en-IN', {maximumFractionDigits:1}) + '</span>'
+      ? '<span style="font-family:monospace;font-weight:700;">&#8377;' + Number(cp).toLocaleString('en-IN', {maximumFractionDigits:1}) + '</span>' +
+        (s.week52_high != null && s.week52_low != null
+          ? '<div class="sector-sub" style="font-size:0.63rem;color:var(--text-muted);">52W: &#8377;' + fmtNum(s.week52_low) + '&ndash;&#8377;' + fmtNum(s.week52_high) + '</div>'
+          : '')
       : '<span style="color:var(--text-muted);">--</span>';
 
     // Market cap
@@ -2223,8 +2226,14 @@ function renderSME(stocks) {
     var roceStr = roce != null
       ? '<span class="' + roceCls + '">' + Number(roce).toFixed(1) + '%</span>' +
         (s.roe != null ? '<div class="sector-sub">ROE:' + Number(s.roe).toFixed(1) + '%</div>' : '') +
+        (s.opm != null ? '<div class="sector-sub">OPM:' + Number(s.opm).toFixed(1) + '%</div>' : '') +
+        (s.net_profit_margin != null ? '<div class="sector-sub">NPM:' + Number(s.net_profit_margin).toFixed(1) + '%</div>' : '') +
         (s.roe_10y != null ? '<div class="sector-sub">ROE10Y:' + Number(s.roe_10y).toFixed(0) + '%</div>' : '')
-      : '<span style="color:var(--text-muted);">N/A</span>';
+      : (s.opm != null
+          ? '<span style="color:var(--text-muted);">N/A</span>' +
+            '<div class="sector-sub">OPM:' + Number(s.opm).toFixed(1) + '%</div>' +
+            (s.net_profit_margin != null ? '<div class="sector-sub">NPM:' + Number(s.net_profit_margin).toFixed(1) + '%</div>' : '')
+          : '<span style="color:var(--text-muted);">N/A</span>');
 
     // Promoter
     var ph    = s.promoter_holding;

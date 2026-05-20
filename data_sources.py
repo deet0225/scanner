@@ -191,13 +191,13 @@ class ScreenerClient:
                         result.setdefault('market_cap_cr', v)
                     elif 'current price' in key_l:
                         result.setdefault('current_price', v)
-                    elif 'stock p/e' in key_l or key_l == 'p/e':
+                    elif 'stock p/e' in key_l or key_l == 'p/e' or key_l == 'pe ratio':
                         result.setdefault('pe_ratio', v)
                     elif 'book value' in key_l:
                         result.setdefault('book_value', v)
-                    elif key_l == 'roce':
+                    elif 'return on capital' in key_l or 'roce' in key_l:
                         result.setdefault('roce', v)
-                    elif key_l == 'roe':
+                    elif 'return on equity' in key_l or key_l == 'roe':
                         result.setdefault('roe', v)
                     elif 'dividend yield' in key_l:
                         result.setdefault('dividend_yield', v)
@@ -205,6 +205,28 @@ class ScreenerClient:
                         result.setdefault('debt_equity', v)
                     elif 'current ratio' in key_l:
                         result.setdefault('current_ratio', v)
+                    elif 'face value' in key_l or key_l == 'face val':
+                        result.setdefault('face_value', v)
+                    elif key_l in ('eps', 'eps (ttm)') or ('earnings per share' in key_l):
+                        result.setdefault('eps', v)
+                    elif 'industry p/e' in key_l or 'industry pe' in key_l:
+                        result.setdefault('industry_pe', v)
+                    elif '52 week high' in key_l or 'high / low' in key_l or '52w high' in key_l:
+                        result.setdefault('week52_high', v)
+                    elif '52 week low' in key_l or '52w low' in key_l:
+                        result.setdefault('week52_low', v)
+                    elif 'peg' in key_l and 'ratio' in key_l:
+                        result.setdefault('peg_ratio', v)
+                    elif 'price to book' in key_l or key_l == 'p/b':
+                        result.setdefault('pb_ratio', v)
+                    elif 'net profit margin' in key_l or key_l == 'npm' or key_l == 'npm %':
+                        result.setdefault('net_profit_margin', v)
+                    elif 'opm' in key_l or 'operating profit margin' in key_l:
+                        result.setdefault('opm', v)
+                    elif 'quick ratio' in key_l:
+                        result.setdefault('quick_ratio', v)
+                    elif 'interest coverage' in key_l:
+                        result.setdefault('interest_coverage', v)
 
                 # ── 1b.  D/E from Balance Sheet rows (primary source) ─────────────
                 # Screener.in never labels "Debt to equity" in key metrics.
@@ -243,18 +265,29 @@ class ScreenerClient:
                 # ── 2. Promoter + FII + DII from shareholding section ─────────────
                 sh_idx = html.find('id="shareholding"')
                 if sh_idx != -1:
-                    sh_chunk = html[sh_idx: sh_idx + 5000]
-                    for label, field in [
-                        ('Promoters', 'promoter_holding'),
-                        ('FII',       'fii_holding'),
-                        ('DII',       'dii_holding'),
-                    ]:
-                        m = re.search(
-                            rf'{label}.*?<td[^>]*>\s*([\d\.]+)%?\s*</td>',
-                            sh_chunk, re.DOTALL,
-                        )
-                        if m:
-                            result.setdefault(field, float(m.group(1)))
+                    sh_chunk = html[sh_idx: sh_idx + 6000]
+                    # Try multiple label variants for each holder type
+                    _sh_patterns = [
+                        ('promoter_holding',
+                         ['Promoters', 'Promoter', 'Promoter &amp; Promoter Group']),
+                        ('fii_holding',
+                         ['FII', 'Foreign Institutional Investors', 'FII / FPI',
+                          'Foreign Portfolio', 'FPI']),
+                        ('dii_holding',
+                         ['DII', 'Domestic Institutional', 'Domestic Institutional Investors',
+                          'MF', 'Mutual Fund']),
+                        ('public_holding',
+                         ['Public', 'Retail']),
+                    ]
+                    for field, labels in _sh_patterns:
+                        for label in labels:
+                            m = re.search(
+                                rf'{re.escape(label)}.*?<td[^>]*>\s*([\d\.]+)%?\s*</td>',
+                                sh_chunk, re.DOTALL,
+                            )
+                            if m:
+                                result.setdefault(field, float(m.group(1)))
+                                break
 
                 # ── 3. Compounded growth tables (Sales + Profit) ──────────────────
                 for section, pref_3y, pref_5y, pref_10y, pref_ttm in [
@@ -297,19 +330,22 @@ class ScreenerClient:
                             result.setdefault('roe_5y',  float(pct))
 
                 # ── 5. Cash from Operations — cash flow section ───────────────────
-                # Screener shows: "Cash from Operating Activity +" as the row label
-                # The row has multiple year columns; we want the most recent (last) year.
-                for cfo_label in (
+                _cfo_labels = (
                     'Cash from Operating Activity',
                     'Cash from Operations',
                     'Cash from operating activity',
                     'Cash From Operating Activity',
-                ):
+                    'Cash from Operating Activity +',
+                    'Cash from operating activities',
+                    'Net Cash from Operating Activities',
+                    'Net Cash from Operations',
+                    'Operating Activities',
+                )
+                for cfo_label in _cfo_labels:
                     cf_idx = html.find(cfo_label)
                     if cf_idx == -1:
                         continue
 
-                    # Walk back to find the enclosing <tr> for this row
                     row_start = html.rfind('<tr', max(0, cf_idx - 300), cf_idx)
                     row_end   = html.find('</tr>', cf_idx)
                     if row_start != -1 and row_end != -1:
@@ -317,7 +353,6 @@ class ScreenerClient:
                     else:
                         row_chunk = html[cf_idx: cf_idx + 800]
 
-                    # Extract all numeric <td> cells (signed, decimal-friendly)
                     td_vals = re.findall(
                         r'<td[^>]*>\s*(-?[\d,]+(?:\.\d+)?)\s*</td>',
                         row_chunk,
@@ -329,11 +364,57 @@ class ScreenerClient:
                         except ValueError:
                             pass
 
-                    # Take the last non-zero value = most recent year
                     non_zero = [n for n in nums if n != 0.0]
                     if non_zero:
                         result.setdefault('cash_from_operations', non_zero[-1])
                         break
+
+                # ── 6. OPM from Profit & Loss section ────────────────────────────
+                if 'opm' not in result:
+                    pl_idx = html.find('id="profit-loss"')
+                    if pl_idx != -1:
+                        pl_chunk = html[pl_idx: pl_idx + 6000]
+                        opm_idx  = pl_chunk.find('OPM')
+                        if opm_idx != -1:
+                            opm_row_start = pl_chunk.rfind('<tr', max(0, opm_idx - 200), opm_idx)
+                            opm_row_end   = pl_chunk.find('</tr>', opm_idx)
+                            if opm_row_start != -1 and opm_row_end != -1:
+                                opm_chunk = pl_chunk[opm_row_start: opm_row_end + 5]
+                                opm_vals  = re.findall(r'<td[^>]*>\s*(-?[\d,]+(?:\.\d+)?)\s*%?\s*</td>', opm_chunk)
+                                opm_nums  = []
+                                for ov in opm_vals:
+                                    try:
+                                        opm_nums.append(float(ov.replace(',', '')))
+                                    except ValueError:
+                                        pass
+                                if opm_nums:
+                                    result.setdefault('opm', opm_nums[-1])
+
+                # ── 7. Net profit margin from ratios table ────────────────────────
+                if 'net_profit_margin' not in result:
+                    r_idx = html.find('id="ratios"')
+                    if r_idx != -1:
+                        r_chunk = html[r_idx: r_idx + 8000]
+                        # NPM row labels on screener.in
+                        for npm_label in ('Net Profit margin', 'NPM', 'Net profit margin',
+                                          'Net Profit Margin'):
+                            npm_idx = r_chunk.find(npm_label)
+                            if npm_idx == -1:
+                                continue
+                            npm_rs  = r_chunk.rfind('<tr', max(0, npm_idx - 200), npm_idx)
+                            npm_re  = r_chunk.find('</tr>', npm_idx)
+                            if npm_rs != -1 and npm_re != -1:
+                                npm_row = r_chunk[npm_rs: npm_re + 5]
+                                npm_vs  = re.findall(r'<td[^>]*>\s*(-?[\d,\.]+)\s*%?\s*</td>', npm_row)
+                                npm_ns  = []
+                                for nv in npm_vs:
+                                    try:
+                                        npm_ns.append(float(nv.replace(',', '')))
+                                    except ValueError:
+                                        pass
+                                if npm_ns:
+                                    result.setdefault('net_profit_margin', npm_ns[-1])
+                                    break
 
                 if result:
                     break   # data found — no need to try alternate URL
@@ -1042,10 +1123,12 @@ class FundamentalsClient:
         """
         Returns all enriched display + analysis fields from Screener.in.
         Keys (all optional): roce, roe, roe_5y, roe_10y, promoter_holding,
-          fii_holding, dii_holding, sales_growth_pct, sales_growth_5y,
+          fii_holding, dii_holding, public_holding, sales_growth_pct, sales_growth_5y,
           sales_growth_10y, profit_growth_3y, profit_growth_5y,
           profit_growth_10y, pe_ratio, book_value, dividend_yield,
-          debt_equity, market_cap_cr, current_price
+          debt_equity, market_cap_cr, current_price, opm, net_profit_margin,
+          face_value, eps, week52_high, week52_low, industry_pe,
+          current_ratio, cash_from_operations
         """
         sym    = nse_symbol.upper().replace(".NS", "").replace(".BO", "")
         extras: dict = {}
@@ -1054,13 +1137,16 @@ class FundamentalsClient:
             sc = self._screener.get(sym)
             if sc:
                 for k in ("roce", "roe", "roe_5y", "roe_10y",
-                          "promoter_holding", "fii_holding", "dii_holding",
+                          "promoter_holding", "fii_holding", "dii_holding", "public_holding",
                           "sales_growth_pct", "sales_growth_5y", "sales_growth_10y",
                           "profit_growth_3y", "profit_growth_5y", "profit_growth_10y",
                           "sales_growth_ttm", "profit_growth_ttm",
                           "pe_ratio", "book_value", "dividend_yield",
                           "debt_equity", "market_cap_cr", "current_price",
-                          "current_ratio", "cash_from_operations"):   # NEW
+                          "current_ratio", "cash_from_operations",
+                          "opm", "net_profit_margin", "face_value", "eps",
+                          "week52_high", "week52_low", "industry_pe",
+                          "pb_ratio", "peg_ratio", "quick_ratio", "interest_coverage"):
                     if k in sc and sc[k] is not None:
                         extras[k] = sc[k]
         except Exception:
@@ -1083,13 +1169,16 @@ class FundamentalsClient:
             sc = self._screener.get_sme(sym)
             if sc:
                 for k in ("roce", "roe", "roe_5y", "roe_10y",
-                          "promoter_holding", "fii_holding", "dii_holding",
+                          "promoter_holding", "fii_holding", "dii_holding", "public_holding",
                           "sales_growth_pct", "sales_growth_5y", "sales_growth_10y",
                           "profit_growth_3y", "profit_growth_5y", "profit_growth_10y",
                           "sales_growth_ttm", "profit_growth_ttm",
                           "pe_ratio", "book_value", "dividend_yield",
                           "debt_equity", "market_cap_cr", "current_price",
-                          "current_ratio", "cash_from_operations"):
+                          "current_ratio", "cash_from_operations",
+                          "opm", "net_profit_margin", "face_value", "eps",
+                          "week52_high", "week52_low", "industry_pe",
+                          "pb_ratio", "peg_ratio", "quick_ratio", "interest_coverage"):
                     if k in sc and sc[k] is not None:
                         extras[k] = sc[k]
         except Exception:
