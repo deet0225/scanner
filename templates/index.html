@@ -540,7 +540,7 @@
         <th title="RSI-14 daily / Weekly RSI-14">RSI&thinsp;14&thinsp;/&thinsp;W</th>
         <th title="ADX-14 — directional strength">ADX&thinsp;14</th>
         <th title="20-Day return vs benchmark index">20D&thinsp;Ret</th>
-        <th title="RS outperformance vs benchmark index (%)">RS&thinsp;vs&thinsp;Idx</th>
+        <th title="Relative Strength vs Nifty 500 — how much more (%) this stock gained vs the index over the last 20 trading days. RS Ratio > 1 = market leader. Higher = stronger momentum.">RS&thinsp;vs&thinsp;Index</th>
         <th title="Volume Z-score / Relative Volume Percentile">Vol&thinsp;Z&thinsp;/&thinsp;RVPct</th>
         <th title="% vs EMA-20 / EMA-20 vs EMA-50">EMA&thinsp;20/50</th>
         <th title="MACD(12,26,9): histogram (momentum acceleration) and signal confirmation">MACD</th>
@@ -1714,13 +1714,44 @@ function renderMomentum(stocks, meta) {
       : '--';
 
     // RS vs Index
-    var rs   = s.rs_outperf_pct;
+    var rs      = s.rs_outperf_pct;
     var rsRatio = s.rs_ratio;
-    var rsCls = rs != null ? (rs >= 5 ? 'vs-sector-pos' : rs >= 0 ? '' : 'vs-sector-neg') : '';
-    var rsCell = rs != null
-      ? '<span class="' + rsCls + '">' + (rs >= 0 ? '+' : '') + Number(rs).toFixed(2) + '%</span>' +
-        (rsRatio != null ? '<div class="sector-sub">RS:' + Number(rsRatio).toFixed(4) + '</div>' : '')
-      : '--';
+    var rsCell  = '--';
+    if (rs != null) {
+      var rsPos    = rs >= 0;
+      var rsCol    = rs >= 5 ? 'var(--green)' : rs >= 0 ? 'var(--blue)' : 'var(--red)';
+      var rsIcon   = rsPos ? '&#9650;' : '&#9660;';
+      var rsStr    = (rsPos ? '+' : '') + Number(rs).toFixed(2) + '%';
+
+      // Strength tier label
+      var rsLabel, rsLabelCol;
+      if (rs >= 15)      { rsLabel = '&#128293; Strong Leader'; rsLabelCol = 'var(--green)'; }
+      else if (rs >= 10) { rsLabel = '&#11088; Leader';         rsLabelCol = 'var(--green)'; }
+      else if (rs >= 5)  { rsLabel = '&#8593; Outperforming';   rsLabelCol = 'var(--green)'; }
+      else if (rs >= 3)  { rsLabel = '&#8593; Beating Index';   rsLabelCol = 'var(--blue)'; }
+      else               { rsLabel = '&#8776; Near Index';       rsLabelCol = 'var(--text-muted)'; }
+
+      // Tooltip — plain text, multiline via \n
+      var rsTip =
+        'Relative Strength vs Nifty 500 (last 20 trading days)\n' +
+        'Stock beat the index by: ' + rsStr + '\n' +
+        (rsRatio != null ? 'RS Ratio: ' + Number(rsRatio).toFixed(4) + '  (> 1 = market leader)\n' : '') +
+        '\nWhat this means:\n' +
+        '  \u25b2 Positive = stock gaining MORE than the index.\n' +
+        '  \u25bc Negative = stock lagging the index.\n' +
+        'A strong RS (> 5%) is the #1 signal of a true market leader.';
+
+      rsCell =
+        '<span title="' + rsTip + '" style="cursor:help;">' +
+          '<span style="color:' + rsCol + ';font-weight:700;font-size:0.92rem;">' +
+            rsIcon + '&thinsp;' + rsStr +
+          '</span>' +
+          '<div class="sector-sub" style="color:' + rsLabelCol + ';font-size:0.68rem;margin-top:1px;">' + rsLabel + '</div>' +
+          (rsRatio != null
+            ? '<div class="sector-sub" style="color:var(--text-muted);font-size:0.65rem;">Ratio:&nbsp;' + Number(rsRatio).toFixed(3) + '</div>'
+            : '') +
+        '</span>';
+    }
 
     // Volume Z / RVPct
     var vz    = s.vol_zscore;
@@ -1744,24 +1775,46 @@ function renderMomentum(stocks, meta) {
     var msig    = s.macd_signal != null ? Number(s.macd_signal) : null;
     var macdCell = '--';
     if (mhist != null) {
-      var histCol  = mhist >= 0 ? 'var(--green)' : 'var(--red)';
-      var histIcon = mhist >= 0 ? '&#9650;' : '&#9660;';
-      var histStr  = (mhist >= 0 ? '+' : '') + mhist.toFixed(4);
+      var histPos  = mhist >= 0;
+      var histCol  = histPos ? 'var(--green)' : 'var(--red)';
+      var histIcon = histPos ? '&#9650;' : '&#9660;';
+      // Use 2 decimals for large values, 4 for small ones
+      var histAbs  = Math.abs(mhist);
+      var histDec  = histAbs >= 1 ? 2 : 4;
+      var histStr  = (histPos ? '+' : '') + mhist.toFixed(histDec);
+      // Tooltip explanation
+      var macdTip  = 'MACD Histogram = MACD Line \u2212 Signal Line.\n' +
+        'Positive (\u25b2): momentum accelerating UP \u2014 buy pressure increasing.\n' +
+        'Negative (\u25bc): momentum decelerating \u2014 sell pressure increasing.\n' +
+        (mline != null ? 'MACD Line: ' + mline.toFixed(2) + '\n' : '') +
+        (msig  != null ? 'Signal Line: ' + msig.toFixed(2)  + '\n' : '') +
+        (mline != null && msig != null ? (mline > msig ? '\u2705 MACD > Signal \u2014 bullish' : '\u26a0 MACD < Signal \u2014 caution') : '');
       macdCell =
-        '<span style="color:' + histCol + ';font-family:monospace;font-weight:700;">' +
-          histIcon + '&thinsp;' + histStr +
+        '<span title="' + macdTip + '" style="cursor:help;">' +
+          '<span style="color:' + histCol + ';font-family:monospace;font-weight:700;font-size:0.88rem;">' +
+            histIcon + '&thinsp;' + histStr +
+          '</span>' +
+          '<div class="sector-sub" style="font-size:0.65rem;color:var(--text-muted);">Histogram</div>' +
         '</span>';
       if (mline != null && msig != null) {
+        var lDec = Math.abs(mline) >= 1 ? 2 : 4;
+        var sDec = Math.abs(msig)  >= 1 ? 2 : 4;
         var crossCol = mline > msig ? 'var(--green)' : 'var(--red)';
+        var crossLbl = mline > msig ? '&#9650; Bullish' : '&#9660; Bearish';
         macdCell +=
-          '<div class="sector-sub" style="color:' + crossCol + ';">' +
-            'L:' + mline.toFixed(4) + ' S:' + msig.toFixed(4) +
+          '<div class="sector-sub" style="margin-top:2px;line-height:1.4;">' +
+            '<span style="color:var(--text-muted);">Line:&nbsp;</span>' +
+            '<span style="color:' + crossCol + ';font-family:monospace;">' + mline.toFixed(lDec) + '</span><br>' +
+            '<span style="color:var(--text-muted);">Sig:&nbsp;&nbsp;</span>' +
+            '<span style="font-family:monospace;">' + msig.toFixed(sDec) + '</span>' +
           '</div>';
       }
     }
 
     // Sector
-    var secCell = '<span class="badge sec-badge bg-' + sectorColor(s.sector) + '">' + (s.sector || '--') + '</span>';
+    var secCell = s.sector
+      ? '<span class="badge sec-badge bg-' + sectorColor(s.sector) + '" style="white-space:normal;word-break:break-word;max-width:90px;display:inline-block;line-height:1.3;">' + s.sector + '</span>'
+      : '<span style="color:var(--text-muted);font-size:0.75rem;">--</span>';
 
     // Mom Score
     var ms    = s.mom_score != null ? Number(s.mom_score) : 0;
