@@ -543,10 +543,11 @@
         <th title="RS outperformance vs benchmark index (%)">RS&thinsp;vs&thinsp;Idx</th>
         <th title="Volume Z-score / Relative Volume Percentile">Vol&thinsp;Z&thinsp;/&thinsp;RVPct</th>
         <th title="% vs EMA-20 / EMA-20 vs EMA-50">EMA&thinsp;20/50</th>
+        <th title="MACD(12,26,9): histogram (momentum acceleration) and signal confirmation">MACD</th>
         <th title="Sector">Sector</th>
-        <th title="Pure Momentum Score (RSI 35+wRSI 15+ADX 20+RS 20+Vol 10 = max 100)">Mom Score</th>
+        <th title="Pure Momentum Score (RSI 30 + RS 25 + ADX 20 + MACD 10 + wRSI 10 + Vol 5 = max 100)">Mom Score</th>
       </tr></thead>
-      <tbody id="mom-results-body"><tr><td colspan="12">
+      <tbody id="mom-results-body"><tr><td colspan="13">
         <div class="empty-state">
           <i class="bi bi-lightning-charge fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
           Click <strong>&#128200; Stock Momentum</strong> tab or <strong>Refresh</strong> to load.
@@ -1641,7 +1642,7 @@ function momLoad() {
       if (btn)    btn.classList.remove('scanning');
       if (loadEl) loadEl.style.display = 'none';
       document.getElementById('mom-results-body').innerHTML =
-        '<tr><td colspan="12"><div class="empty-state">' +
+        '<tr><td colspan="13"><div class="empty-state">' +
         '<i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
         'Error: ' + err + '</div></td></tr>';
     });
@@ -1669,7 +1670,7 @@ function renderMomentum(stocks, meta) {
         'No momentum stocks found' +
         (asOf ? ' for ' + asOf : ' today') + '.<br>' +
         '<small style="color:var(--text-muted);">Try a different date or check back after the next trading session.</small>';
-    tbody.innerHTML = '<tr><td colspan="12"><div class="empty-state">' + msg + '</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13"><div class="empty-state">' + msg + '</div></td></tr>';
     return;
   }
 
@@ -1737,6 +1738,28 @@ function renderMomentum(stocks, meta) {
         (pve20 >= 0 ? '+' : '') + Number(pve20).toFixed(2) + '% vs 20</span>' : '--') +
       (e2050 != null ? '<div class="sector-sub">' + (e2050 >= 0 ? '+' : '') + Number(e2050).toFixed(2) + '% 20>50</div>' : '');
 
+    // MACD
+    var mhist   = s.macd_hist   != null ? Number(s.macd_hist)   : null;
+    var mline   = s.macd        != null ? Number(s.macd)        : null;
+    var msig    = s.macd_signal != null ? Number(s.macd_signal) : null;
+    var macdCell = '--';
+    if (mhist != null) {
+      var histCol  = mhist >= 0 ? 'var(--green)' : 'var(--red)';
+      var histIcon = mhist >= 0 ? '&#9650;' : '&#9660;';
+      var histStr  = (mhist >= 0 ? '+' : '') + mhist.toFixed(4);
+      macdCell =
+        '<span style="color:' + histCol + ';font-family:monospace;font-weight:700;">' +
+          histIcon + '&thinsp;' + histStr +
+        '</span>';
+      if (mline != null && msig != null) {
+        var crossCol = mline > msig ? 'var(--green)' : 'var(--red)';
+        macdCell +=
+          '<div class="sector-sub" style="color:' + crossCol + ';">' +
+            'L:' + mline.toFixed(4) + ' S:' + msig.toFixed(4) +
+          '</div>';
+      }
+    }
+
     // Sector
     var secCell = '<span class="badge sec-badge bg-' + sectorColor(s.sector) + '">' + (s.sector || '--') + '</span>';
 
@@ -1789,6 +1812,7 @@ function renderMomentum(stocks, meta) {
       '<td>' + rsCell  + '</td>' +
       '<td>' + volCell + '</td>' +
       '<td>' + emaCell + '</td>' +
+      '<td>' + macdCell + '</td>' +
       '<td>' + secCell + '</td>' +
       '<td>' + msCell   + '</td>' +
       '</tr>';
