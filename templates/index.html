@@ -72,9 +72,11 @@
       padding: 10px 20px;
       display: flex; align-items: center; justify-content: space-between;
       position: sticky; top: 0; z-index: 100;
+      color: #e6edf3;
     }
-    .topbar-title { font-size: 1.1rem; font-weight: 700; }
-    .topbar-title small { color: var(--text-muted); font-size: 0.7rem; font-weight: 400; margin-left: 8px; }
+    .topbar-title { font-size: 1.1rem; font-weight: 700; color: #e6edf3; }
+    .topbar-title small { color: #8b949e; font-size: 0.7rem; font-weight: 400; margin-left: 8px; }
+    .topbar-muted { color: #8b949e; }
     /* ── Tab bar ── */
     .tab-bar {
       background: var(--bg-card);
@@ -88,7 +90,7 @@
       padding: 11px 18px 10px; cursor: pointer; transition: color 0.15s;
       margin-bottom: -2px;
     }
-    .tab-btn:hover  { color: #c9d1d9; }
+    .tab-btn:hover  { color: var(--text-primary); }
     .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
     .tab-pane { display: none; }
     .tab-pane.active { display: block; }
@@ -174,6 +176,7 @@
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
     .scanning-msg { text-align: center; padding: 64px 20px; display: none; }
     .scanning-msg.show { display: block; }
+    .scan-status-txt { color: var(--text-primary); }
     .empty-state { text-align: center; padding: 56px 20px; color: var(--text-muted); }
     footer {
       position: fixed; bottom: 0; left: 0; right: 0;
@@ -326,10 +329,46 @@
       border-left-color: var(--orange); border-bottom-color: #fed7aa;
       color: #9a3412;
     }
-    [data-theme="light"] .tab-bar { background: var(--bg-card); }
-    [data-theme="light"] .topbar { background: linear-gradient(135deg, #24292f 0%, #32383f 100%); }
+    [data-theme="light"] .tab-bar  { background: var(--bg-card); }
+    [data-theme="light"] .tab-btn:hover { color: var(--text-primary); }
+    /* ── Topbar: always dark bg → always force light text ── */
+    [data-theme="light"] .topbar {
+      background: linear-gradient(135deg, #24292f 0%, #32383f 100%);
+      color: #e6edf3;
+    }
+    [data-theme="light"] .topbar-title        { color: #e6edf3; }
+    [data-theme="light"] .topbar-title small  { color: #8b949e; }
+    [data-theme="light"] #status-text         { color: #c9d1d9 !important; }
+    [data-theme="light"] #last-updated        { color: #8b949e !important; }
+    [data-theme="light"] .theme-toggle-btn    { color: #8b949e; border-color: #444c56; }
+    [data-theme="light"] .theme-toggle-btn:hover { color: #e6edf3; background: #2d333b; border-color: #58a6ff; }
     [data-theme="light"] .sec-tile { border-color: rgba(0,0,0,0.1); }
+    [data-theme="light"] .sec-tile-bar { background: rgba(0,0,0,0.1); }
     [data-theme="light"] .date-inp { color: var(--text-primary); }
+    [data-theme="light"] .hist-badge { background: #fff3cd; color: #856404; border-color: #ffc107; }
+    [data-theme="light"] .rescan-btn:hover { background: #ecfdf5; border-color: var(--green); }
+    [data-theme="light"] .scan-status-txt { color: var(--text-muted); }
+    /* ── Fundamentals tab ── */
+    .fund-bar-wrap { height: 4px; background: var(--border); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+    .fund-bar-fill { height: 4px; border-radius: 2px; background: linear-gradient(90deg, var(--green), var(--blue)); }
+    .fund-grade { display: inline-block; font-size: 0.65rem; font-weight: 700; padding: 1px 6px; border-radius: 3px; margin-left: 4px; white-space: nowrap; }
+    .fund-grade-a { background: #143520; color: #3fb950; }
+    .fund-grade-b { background: #1a3010; color: #8bc34a; }
+    .fund-grade-c { background: #2e2a08; color: #e3b341; }
+    .fund-grade-d { background: #2a1010; color: #ff7b72; }
+    [data-theme="light"] .fund-grade-a { background: #d1fae5; color: #065f46; }
+    [data-theme="light"] .fund-grade-b { background: #eff8dc; color: #365314; }
+    [data-theme="light"] .fund-grade-c { background: #fef9c3; color: #713f12; }
+    [data-theme="light"] .fund-grade-d { background: #fee2e2; color: #991b1b; }
+    .de-good  { color: var(--green);  font-weight: 700; }
+    .de-ok    { color: var(--yellow); font-weight: 700; }
+    .de-bad   { color: var(--red);    font-weight: 700; }
+    .promo-high { color: var(--green);  font-weight: 700; }
+    .promo-mid  { color: var(--yellow); font-weight: 700; }
+    .promo-low  { color: var(--red);    font-weight: 700; }
+    /* Swing "From" column badges */
+    .from-n500  { color: var(--blue);   font-size: 0.70rem; font-weight: 700; }
+    .from-mc250 { color: #38bdf8;       font-size: 0.70rem; font-weight: 700; }
   </style>
 </head>
 <body>
@@ -345,7 +384,7 @@
       <span class="status-dot init" id="status-dot"></span>
       <span id="status-text" style="font-size:0.82rem;">Initializing...</span>
     </span>
-    <span id="last-updated" style="font-size:0.78rem; color:var(--text-muted);">--</span>
+    <span id="last-updated" style="font-size:0.78rem;" class="topbar-muted">--</span>
     <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle light/dark theme">
       <span id="theme-icon">☀️</span>
       <span id="theme-label">Light</span>
@@ -355,53 +394,54 @@
 
 <!-- ── Tab bar ── -->
 <div class="tab-bar">
-  <button class="tab-btn active" id="tab-btn-n500"    onclick="switchTab('n500')">&#127881; Nifty 500</button>
-  <button class="tab-btn"        id="tab-btn-mc250"   onclick="switchTab('mc250')">&#129516; Nifty Microcap 250</button>
-  <button class="tab-btn"        id="tab-btn-sectors" onclick="switchTab('sectors')">&#128200; Sector Momentum</button>
-  <button class="tab-btn"        id="tab-btn-search"  onclick="switchTab('search')">&#128269; Stock Search</button>
+  <button class="tab-btn active" id="tab-btn-swing"        onclick="switchTab('swing')">&#9889; Swing Trades</button>
+  <button class="tab-btn"        id="tab-btn-momentum"     onclick="switchTab('momentum')">&#128200; Stock Momentum</button>
+  <button class="tab-btn"        id="tab-btn-morningmom"   onclick="switchTab('morningmom')">&#127774; Morning Star</button>
+  <button class="tab-btn"        id="tab-btn-fund"         onclick="switchTab('fund')">&#128142; Fundamentals</button>
+  <button class="tab-btn"        id="tab-btn-sme"          onclick="switchTab('sme')">&#127981; SME Fundamentals</button>
+  <button class="tab-btn"        id="tab-btn-sectors"      onclick="switchTab('sectors')">&#128201; Sector Momentum</button>
+  <button class="tab-btn"        id="tab-btn-search"       onclick="switchTab('search')">&#128269; Stock Search</button>
 </div>
 
-<!-- ════════════════════════════════ TAB 1: Nifty 500 ════════════════════════════════ -->
-<div class="tab-pane active" id="tab-n500">
+<!-- ════════════════════════════════ TAB 1: Swing Trades (Nifty 500 + Microcap 250) ════════════════════════════════ -->
+<div class="tab-pane active" id="tab-swing">
   <div class="statbar">
     <div class="stat-pill">
-      <i class="bi bi-clock-history text-info"></i>
-      <div><div class="stat-label">Next Scan</div><div class="stat-value" id="n5-countdown">--</div></div>
-    </div>
-    <div class="stat-pill">
       <i class="bi bi-trophy-fill text-warning"></i>
-      <div><div class="stat-label">Qualified</div><div class="stat-value" id="n5-qualified">--</div></div>
+      <div><div class="stat-label">Combined Qualified</div><div class="stat-value" id="swing-qualified">--</div></div>
     </div>
     <div class="stat-pill">
-      <i class="bi bi-arrow-repeat text-success"></i>
-      <div><div class="stat-label">Scan #</div><div class="stat-value" id="n5-scan-count">0</div></div>
+      <i class="bi bi-bar-chart-line text-primary"></i>
+      <div><div class="stat-label">Nifty 500</div><div class="stat-value" id="swing-n5-status" style="font-size:0.78rem;">--</div></div>
+    </div>
+    <div class="stat-pill">
+      <i class="bi bi-graph-up text-info"></i>
+      <div><div class="stat-label">Microcap 250</div><div class="stat-value" id="swing-mc-status" style="font-size:0.78rem;">--</div></div>
     </div>
     <div class="stat-pill">
       <i class="bi bi-calendar-check text-muted"></i>
-      <div><div class="stat-label">Last Scan</div><div class="stat-value" id="n5-last-scan-ago" style="font-size:0.78rem;">--</div></div>
+      <div><div class="stat-label">Last Scan</div><div class="stat-value" id="swing-last-scan-ago" style="font-size:0.78rem;">--</div></div>
     </div>
-    <button class="rescan-btn" id="n5-rescan-btn" onclick="n5Rescan()" title="Force a fresh scan now">
+    <button class="rescan-btn" id="swing-rescan-btn" onclick="swingRescan()" title="Refresh both N500 and Microcap250 scans">
       <i class="bi bi-arrow-clockwise icon"></i>
       <i class="bi bi-arrow-clockwise spin"></i>
-      Refresh
+      Refresh Both
     </button>
-    <div class="date-picker-wrap">
-      <label for="n5-date">&#128197; Date</label>
-      <input type="date" id="n5-date" class="date-inp" title="Historical date" />
+    <div class="date-picker-wrap" title="Pick a date for historical scan — leave blank for live data">
+      <label for="swing-date">&#128197; Date</label>
+      <input type="date" id="swing-date" class="date-inp" title="Historical date (leave blank for live)" />
     </div>
-    <span class="hist-badge" id="n5-hist-badge">&#128197; Historical</span>
-    <button class="live-btn" id="n5-live-btn" onclick="n5SwitchToLive()">&#9889; Go Live</button>
-      <div class="criteria-pill" id="n5-criteria-pill">
-        Loading filter criteria...
-      </div>
-  </div><!-- /statbar n500 -->
+    <span class="hist-badge" id="swing-hist-badge"></span>
+    <button class="live-btn" id="swing-live-btn" onclick="swingClearDate()">&#9889; Live</button>
+    <div class="criteria-pill" id="swing-criteria-pill">Loading filter criteria...</div>
+  </div>
 
-  <!-- Regime warning banner (shown when regime_ok = false) -->
-  <div class="regime-banner" id="n5-regime-banner">
+  <!-- Regime warning banner -->
+  <div class="regime-banner" id="swing-regime-banner">
     <i class="bi bi-exclamation-triangle-fill" style="font-size:1.1rem; flex-shrink:0;"></i>
     <div>
-      <strong>&#9888; Market Regime Warning &mdash; Nifty 500</strong>
-      <span id="n5-regime-msg" style="margin-left:8px;"></span>
+      <strong>&#9888; Market Regime Warning</strong>
+      <span id="swing-regime-msg" style="margin-left:8px;"></span>
       <span style="color:var(--text-muted); margin-left:10px; font-size:0.78rem;">
         Use reduced position sizes &middot; Tighten stops &middot; Prefer highest-ranked picks only.
       </span>
@@ -411,19 +451,20 @@
   <div class="main-card">
     <div class="card-head">
       <div style="font-weight:600; font-size:0.92rem;">
-        <i class="bi bi-bar-chart-line-fill text-warning me-2"></i>
-        Nifty 500 &mdash; Top Picks Ranked by Composite Score
+        <i class="bi bi-lightning-charge-fill text-warning me-2"></i>
+        Swing Trades &mdash; Nifty 500 + Microcap 250 &mdash; Ranked by Composite Score
       </div>
-      <span class="badge bg-success" id="n5-result-count" style="font-size:0.75rem;">0 stocks</span>
+      <span class="badge bg-warning text-dark" id="swing-result-count" style="font-size:0.75rem;">0 stocks</span>
     </div>
-    <div class="scanning-msg" id="n5-scanning-msg">
-      <div class="spinner-border text-primary mb-3" role="status" style="width:2.5rem;height:2.5rem;"></div>
-      <div id="n5-scan-msg-text" style="font-size:0.95rem; color:#c9d1d9;">Downloading OHLCV for 500 tickers...</div>
-      <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">First scan takes <strong>5&ndash;10 minutes</strong>. Please wait.</div>
+    <div class="scanning-msg" id="swing-scanning-msg">
+      <div class="spinner-border text-warning mb-3" role="status" style="width:2.5rem;height:2.5rem;"></div>
+      <div id="swing-scan-msg-text" class="scan-status-txt" style="font-size:0.95rem;">Downloading OHLCV data...</div>
+      <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">Scanning 750 tickers (Nifty 500 + Microcap 250). First run takes <strong>5&ndash;10 min</strong>.</div>
     </div>
     <div class="table-responsive">
       <table><thead><tr>
         <th style="width:48px;">#</th>
+        <th style="width:80px;">From</th>
         <th>Ticker / Company</th>
         <th>Price (&#8377;)</th>
         <th>Stop Loss</th>
@@ -435,99 +476,283 @@
         <th>RS Ratio / 20D</th>
         <th>Score</th>
       </tr></thead>
-      <tbody id="n5-results-body"><tr><td colspan="11">
+      <tbody id="swing-results-body"><tr><td colspan="12">
         <div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2"></i>Waiting for first scan...</div>
       </td></tr></tbody></table>
     </div>
   </div>
 </div>
 
-<!-- ════════════════════════════════ TAB 2: Microcap 250 ════════════════════════════════ -->
-<div class="tab-pane" id="tab-mc250">
+<!-- ════════════════════════════════ TAB: Stock Momentum ════════════════════════════════ -->
+<div class="tab-pane" id="tab-momentum">
   <div class="statbar">
     <div class="stat-pill">
-      <i class="bi bi-clock-history text-info"></i>
-      <div><div class="stat-label">Next Scan</div><div class="stat-value" id="mc-countdown">--</div></div>
+      <i class="bi bi-lightning-charge-fill text-warning"></i>
+      <div><div class="stat-label">Qualified</div><div class="stat-value" id="mom-count">--</div></div>
     </div>
     <div class="stat-pill">
-      <i class="bi bi-trophy-fill text-warning"></i>
-      <div><div class="stat-label">Qualified</div><div class="stat-value" id="mc-qualified">--</div></div>
+      <i class="bi bi-bar-chart-line text-primary"></i>
+      <div><div class="stat-label">Nifty 500</div><div class="stat-value" id="mom-n5-count" style="font-size:0.78rem;">--</div></div>
     </div>
     <div class="stat-pill">
-      <i class="bi bi-arrow-repeat text-success"></i>
-      <div><div class="stat-label">Scan #</div><div class="stat-value" id="mc-scan-count">0</div></div>
+      <i class="bi bi-graph-up text-info"></i>
+      <div><div class="stat-label">Microcap 250</div><div class="stat-value" id="mom-mc-count" style="font-size:0.78rem;">--</div></div>
     </div>
     <div class="stat-pill">
-      <i class="bi bi-calendar-check text-muted"></i>
-      <div><div class="stat-label">Last Scan</div><div class="stat-value" id="mc-last-scan-ago" style="font-size:0.78rem;">--</div></div>
+      <i class="bi bi-clock-history text-muted"></i>
+      <div><div class="stat-label">Scan Status</div><div class="stat-value" id="mom-scan-status" style="font-size:0.72rem;">--</div></div>
     </div>
-    <button class="rescan-btn" id="mc-rescan-btn" onclick="mcRescan()" title="Force a fresh scan now">
+    <button class="rescan-btn" id="mom-refresh-btn" onclick="momLoad()" title="Refresh Stock Momentum rankings">
       <i class="bi bi-arrow-clockwise icon"></i>
       <i class="bi bi-arrow-clockwise spin"></i>
       Refresh
     </button>
-    <div class="date-picker-wrap">
-      <label for="mc-date">&#128197; Date</label>
-      <input type="date" id="mc-date" class="date-inp" title="Historical date" />
+    <div class="date-picker-wrap" title="Pick a date for historical momentum — leave blank for live data">
+      <label for="mom-date">&#128197; Date</label>
+      <input type="date" id="mom-date" class="date-inp" title="Historical date (leave blank for live)" />
     </div>
-    <span class="hist-badge" id="mc-hist-badge">&#128197; Historical</span>
-    <button class="live-btn" id="mc-live-btn" onclick="mcSwitchToLive()">&#9889; Go Live</button>
-    <div class="criteria-pill" id="mc-criteria-pill">
-      Loading filter criteria...
+    <span class="hist-badge" id="mom-hist-badge"></span>
+    <button class="live-btn" id="mom-live-btn" onclick="momClearDate()">&#9889; Live</button>
+    <div id="mom-criteria-pill" style="margin-left:auto;font-size:0.72rem;color:var(--text-muted);padding:5px 12px;">
+      Loading criteria&hellip;
     </div>
-  </div><!-- /statbar mc250 -->
+  </div>
 
-  <!-- Microcap regime warning banner -->
-  <div class="regime-banner" id="mc-regime-banner">
-    <i class="bi bi-exclamation-triangle-fill" style="font-size:1.1rem; flex-shrink:0;"></i>
-    <div>
-      <strong>&#9888; Market Regime Warning &mdash; Nifty Microcap 250</strong>
-      <span id="mc-regime-msg" style="margin-left:8px;"></span>
-      <span style="color:var(--text-muted); margin-left:10px; font-size:0.78rem;">
-        Use reduced position sizes &middot; Tighten stops &middot; Prefer highest-ranked picks only.
-      </span>
+  <div class="main-card">
+    <div class="card-head">
+      <div style="font-weight:600;font-size:0.92rem;">
+        <i class="bi bi-lightning-charge-fill text-warning me-2"></i>
+        Stock Momentum &mdash; NSE 500 + Microcap 250 &mdash; Strict High-Momentum &mdash; Technicals Only
+      </div>
+      <span class="badge bg-warning text-dark" id="mom-result-count" style="font-size:0.75rem;">0 stocks</span>
+    </div>
+    <div id="mom-loading-msg" class="scanning-msg" style="display:none;">
+      <div class="spinner-border text-warning mb-3" role="status" style="width:2.5rem;height:2.5rem;"></div>
+      <div class="scan-status-txt" style="font-size:0.95rem;" id="mom-loading-text">Running momentum filter&hellip;</div>
+      <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">Scan in progress &mdash; will auto-reload when complete.</div>
+    </div>
+    <div class="table-responsive">
+      <table><thead><tr>
+        <th style="width:42px;">#</th>
+        <th style="width:80px;">From</th>
+        <th>Ticker / Name</th>
+        <th>Price (&#8377;)</th>
+        <th title="RSI-14 daily / Weekly RSI-14">RSI&thinsp;14&thinsp;/&thinsp;W</th>
+        <th title="ADX-14 — directional strength">ADX&thinsp;14</th>
+        <th title="20-Day return vs benchmark index">20D&thinsp;Ret</th>
+        <th title="RS outperformance vs benchmark index (%)">RS&thinsp;vs&thinsp;Idx</th>
+        <th title="Volume Z-score / Relative Volume Percentile">Vol&thinsp;Z&thinsp;/&thinsp;RVPct</th>
+        <th title="% vs EMA-20 / EMA-20 vs EMA-50">EMA&thinsp;20/50</th>
+        <th title="Sector">Sector</th>
+        <th title="Pure Momentum Score (RSI 35+wRSI 15+ADX 20+RS 20+Vol 10 = max 100)">Mom Score</th>
+      </tr></thead>
+      <tbody id="mom-results-body"><tr><td colspan="12">
+        <div class="empty-state">
+          <i class="bi bi-lightning-charge fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
+          Click <strong>&#128200; Stock Momentum</strong> tab or <strong>Refresh</strong> to load.
+        </div>
+      </td></tr></tbody></table>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div style="padding:8px 18px 14px;font-size:0.72rem;color:var(--text-muted);display:flex;gap:14px;flex-wrap:wrap;">
+    <span style="font-weight:700;color:var(--text-primary);">Momentum Filters (all must pass):</span>
+    <span>RSI&#8805;<span id="mom-leg-rsi" style="color:var(--green);">60</span></span>
+    <span>wRSI&#8805;<span id="mom-leg-wrsi" style="color:var(--green);">55</span></span>
+    <span>ADX&#8805;<span id="mom-leg-adx" style="color:var(--green);">22</span></span>
+    <span>VolZ&#8805;<span id="mom-leg-volz" style="color:var(--green);">0.5</span></span>
+    <span>RS&#8805;<span id="mom-leg-rs" style="color:var(--green);">+1.5%</span></span>
+    <span>20D&#8805;<span id="mom-leg-ret" style="color:var(--green);">+1.5%</span></span>
+    <span style="margin-left:8px;">Liq min: <span style="color:var(--green);">&#8377;0.6&thinsp;Cr</span></span>
+    <span style="margin-left:8px;">&#x25CF; <span class="from-n500">Nifty 500</span> &nbsp; &#x25CF; <span class="from-mc250">Microcap 250</span></span>
+    <span style="margin-left:8px;">Mom Score = RSI(35)+wRSI(15)+ADX(20)+RS(20)+Vol(10) &mdash; max 100</span>
+  </div>
+</div>
+
+<!-- ════════════════════════════════ TAB: Morning Star ════════════════════════════════ -->
+<div class="tab-pane" id="tab-morningmom">
+  <div class="statbar">
+    <div class="stat-pill">
+      <i class="bi bi-sunrise-fill text-warning"></i>
+      <div><div class="stat-label">Qualified</div><div class="stat-value" id="mmom-count">--</div></div>
+    </div>
+    <div class="stat-pill">
+      <i class="bi bi-bar-chart-line text-primary"></i>
+      <div><div class="stat-label">Nifty 500</div><div class="stat-value" id="mmom-n5-count" style="font-size:0.78rem;">--</div></div>
+    </div>
+    <div class="stat-pill">
+      <i class="bi bi-graph-up text-info"></i>
+      <div><div class="stat-label">Microcap 250</div><div class="stat-value" id="mmom-mc-count" style="font-size:0.78rem;">--</div></div>
+    </div>
+    <div class="stat-pill">
+      <i class="bi bi-clock-history text-muted"></i>
+      <div><div class="stat-label">Tickers Scanned</div><div class="stat-value" id="mmom-total-mom" style="font-size:0.72rem;">750</div></div>
+    </div>
+    <div class="stat-pill">
+      <i class="bi bi-clock-history text-muted"></i>
+      <div><div class="stat-label">Scan Status</div><div class="stat-value" id="mmom-scan-status" style="font-size:0.72rem;">--</div></div>
+    </div>
+    <button class="rescan-btn" id="mmom-refresh-btn" onclick="mmomLoad()" title="Refresh Morning Star scan">
+      <i class="bi bi-arrow-clockwise icon"></i>
+      <i class="bi bi-arrow-clockwise spin"></i>
+      Refresh
+    </button>
+    <div class="date-picker-wrap" title="Pick a date for historical scan — leave blank for live data">
+      <label for="mmom-date">&#128197; Date</label>
+      <input type="date" id="mmom-date" class="date-inp" title="Historical date (leave blank for live)" />
+    </div>
+    <span class="hist-badge" id="mmom-hist-badge"></span>
+    <button class="live-btn" id="mmom-live-btn" onclick="mmomClearDate()">&#9889; Live</button>
+    <div id="mmom-criteria-pill" style="margin-left:auto;font-size:0.72rem;color:var(--text-muted);padding:5px 12px;">
+      Loading criteria&hellip;
+    </div>
+  </div>
+
+  <!-- Morning Star explanation card -->
+  <div style="margin:14px 18px 4px;padding:12px 18px;background:var(--criteria-card-bg);border:1px solid var(--border);border-radius:8px;font-size:0.78rem;color:var(--text-muted);">
+    <span style="font-weight:700;color:var(--text-primary);">&#127774; Strict Morning Star Pattern</span>
+    &nbsp;&mdash;&nbsp;
+    <span style="color:var(--red);">&#9646; Day&minus;3: Large bearish candle (&ge;1% of price)</span>
+    &nbsp;&#8594;&nbsp;
+    <span style="color:var(--yellow);">&#9644; Day&minus;2: Tiny star (&lt;35% of Day&minus;3 body)</span>
+    &nbsp;&#8594;&nbsp;
+    <span style="color:var(--green);">&#9646; Day&minus;1: Strong bullish candle (&ge;50% penetration &amp; body &ge;50% of Day&minus;3)</span>
+    &nbsp;&mdash;&nbsp;
+    <strong>Quality gates:</strong> Liquidity &ge;3&nbsp;Cr &middot; Prior decline &ge;3% &middot; Volume &ge;1&times; avg
+    &nbsp;&mdash;&nbsp;
+    <strong>All 750 tickers</strong> (N500 + MC250) &middot; Last 3 bars only (no stale patterns)
+  </div>
+
+  <div class="main-card">
+    <div class="card-head">
+      <div style="font-weight:600;font-size:0.92rem;">
+        <i class="bi bi-sunrise-fill text-warning me-2"></i>
+        Morning Star &mdash; ALL 750 Stocks (N500 + MC250) &mdash; 3-Candle Pattern
+      </div>
+      <span class="badge bg-warning text-dark" id="mmom-result-count" style="font-size:0.75rem;">0 stocks</span>
+    </div>
+    <div id="mmom-loading-msg" class="scanning-msg" style="display:none;">
+      <div class="spinner-border text-warning mb-3" role="status" style="width:2.5rem;height:2.5rem;"></div>
+      <div class="scan-status-txt" style="font-size:0.95rem;" id="mmom-loading-text">Scanning all 750 tickers for Morning Star pattern&hellip;</div>
+      <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">Scan in progress &mdash; will auto-reload when complete.</div>
+    </div>
+    <div class="table-responsive">
+      <table><thead><tr>
+        <th style="width:42px;">#</th>
+        <th style="width:80px;">From</th>
+        <th>Ticker / Name</th>
+        <th>Price (&#8377;)</th>
+        <th title="RSI-14 daily / Weekly RSI-14">RSI&thinsp;14&thinsp;/&thinsp;W</th>
+        <th title="ADX-14 — directional strength">ADX&thinsp;14</th>
+        <th title="20-Day return vs benchmark index">20D&thinsp;Ret</th>
+        <th title="RS outperformance vs benchmark index (%)">RS&thinsp;vs&thinsp;Idx</th>
+        <th title="Volume Z-score / Relative Volume Percentile">Vol&thinsp;Z&thinsp;/&thinsp;RVPct</th>
+        <th title="% vs EMA-20 / EMA-20 vs EMA-50">EMA&thinsp;20/50</th>
+        <th title="Sector">Sector</th>
+        <th title="Morning Star pattern confirmed on last 3 candles">&#127774;&thinsp;Star</th>
+        <th title="Star Quality Score: Penetration(30%) + Volume Surge(25%) + Oversold RSI(25%) + Prior Decline(20%) — max 100">&#127774;&thinsp;Star Score</th>
+      </tr></thead>
+      <tbody id="mmom-results-body"><tr><td colspan="13">
+        <div class="empty-state">
+          <i class="bi bi-sunrise fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
+          Click <strong>&#127774; Morning Star</strong> tab or <strong>Refresh</strong> to load.
+        </div>
+      </td></tr></tbody></table>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div style="padding:8px 18px 14px;font-size:0.72rem;color:var(--text-muted);display:flex;gap:14px;flex-wrap:wrap;">
+    <span style="font-weight:700;color:var(--text-primary);">Strict Pattern:</span>
+    <span>Day-1 &ge;1% bearish &rarr; Star &lt;35% &rarr; Day-3 &ge;50% penetration &amp; body &ge;50% of Day-1</span>
+    <span>&nbsp;&middot;&nbsp;Liq &ge;3Cr &middot; Prior drop &ge;3% &middot; Vol &ge;1&times; &middot; Last 3 bars only</span>
+    <span style="margin-left:8px;">&#x25CF; <span class="from-n500">Nifty 500</span> &nbsp; &#x25CF; <span class="from-mc250">Microcap 250</span></span>
+  </div>
+</div>
+
+<!-- ════════════════════════════════ TAB: SME Fundamentals ════════════════════════════════ -->
+<div class="tab-pane" id="tab-sme">
+  <div class="statbar">
+    <div class="stat-pill">
+      <i class="bi bi-buildings text-warning"></i>
+      <div><div class="stat-label">SME Ranked</div><div class="stat-value" id="sme-count">--</div></div>
+    </div>
+    <div class="stat-pill">
+      <i class="bi bi-graph-up-arrow text-primary"></i>
+      <div><div class="stat-label">NSE Emerge</div><div class="stat-value" id="sme-nse-count" style="font-size:0.78rem;">--</div></div>
+    </div>
+    <div class="stat-pill">
+      <i class="bi bi-graph-up text-info"></i>
+      <div><div class="stat-label">BSE SME</div><div class="stat-value" id="sme-bse-count" style="font-size:0.78rem;">--</div></div>
+    </div>
+    <div class="stat-pill">
+      <i class="bi bi-clock-history text-muted"></i>
+      <div><div class="stat-label">Cache</div><div class="stat-value" id="sme-source" style="font-size:0.72rem;">--</div></div>
+    </div>
+    <button class="rescan-btn" id="sme-refresh-btn" onclick="smeLoad(true)" title="Refresh SME fundamental rankings">
+      <i class="bi bi-arrow-clockwise icon"></i>
+      <i class="bi bi-arrow-clockwise spin"></i>
+      Refresh
+    </button>
+    <div style="margin-left:auto; font-size:0.72rem; color:var(--text-muted); padding:5px 12px;">
+      SME Quality Rankings &mdash; NSE Emerge &amp; BSE SME IPO &mdash; Low Debt &middot; Positive CFO &middot; High ROCE &middot; Growth
     </div>
   </div>
 
   <div class="main-card">
     <div class="card-head">
       <div style="font-weight:600; font-size:0.92rem;">
-        <i class="bi bi-graph-up-arrow text-info me-2"></i>
-        Nifty Microcap 250 &mdash; Top Picks Ranked by Composite Score
+        <i class="bi bi-buildings text-warning me-2"></i>
+        SME Quality Rankings &mdash; NSE Emerge + BSE SME IPO
       </div>
-      <span class="badge bg-info text-dark" id="mc-result-count" style="font-size:0.75rem;">0 stocks</span>
+      <span class="badge bg-warning text-dark" id="sme-result-count" style="font-size:0.75rem;">0 stocks</span>
     </div>
-    <div class="scanning-msg" id="mc-scanning-msg">
-      <div class="spinner-border text-info mb-3" role="status" style="width:2.5rem;height:2.5rem;"></div>
-      <div id="mc-scan-msg-text" style="font-size:0.95rem; color:#c9d1d9;">Downloading OHLCV for 250 tickers...</div>
-      <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">First scan takes <strong>5&ndash;10 minutes</strong>. Please wait.</div>
+    <div id="sme-loading-msg" class="scanning-msg" style="display:none;">
+      <div class="spinner-border text-warning mb-3" role="status" style="width:2.5rem;height:2.5rem;"></div>
+      <div class="scan-status-txt" style="font-size:0.95rem;">Fetching SME fundamental data&hellip;</div>
+      <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">Loading from Screener.in cache &mdash; may take 60–120 s on first run.</div>
     </div>
     <div class="table-responsive">
       <table><thead><tr>
-        <th style="width:48px;">#</th>
-        <th>Ticker / Company</th>
-        <th>Price (&#8377;)</th>
-        <th>Stop Loss</th>
-        <th>Vol&thinsp;Z / RVPct</th>
-        <th>RSI&thinsp;14 / W</th>
-        <th>ADX&thinsp;14</th>
-        <th>20EMA&thinsp;vs&thinsp;50EMA</th>
-        <th>Sector / Fundamentals</th>
-        <th>RS Ratio / 20D</th>
-        <th>Score</th>
+        <th style="width:38px;">#</th>
+        <th style="width:80px;" title="Listed on NSE Emerge or BSE SME IPO platform">Exchange</th>
+        <th>Ticker</th>
+        <th title="Current market price">Price</th>
+        <th>Mkt Cap</th>
+        <th title="Debt-to-Equity ratio — lower is better">D/E</th>
+        <th title="Return on Capital Employed">ROCE %</th>
+        <th title="Promoter stake">Promoter</th>
+        <th title="FII + DII combined">Inst %</th>
+        <th title="PEG = P/E ÷ Earnings Growth">PEG</th>
+        <th title="CFO Yield = Cash from Operations ÷ MCap × 100">CFO Yield</th>
+        <th title="3-Year Sales Growth">Sales 3Y</th>
+        <th title="3-Year Profit Growth">Profit 3Y</th>
+        <th title="Composite fundamental quality score (12 factors)">Fund Score</th>
       </tr></thead>
-      <tbody id="mc-results-body"><tr><td colspan="11">
+      <tbody id="sme-results-body"><tr><td colspan="14">
         <div class="empty-state">
-          <i class="bi bi-collection-play fs-2 d-block mb-2" style="color:var(--blue);"></i>
-          <strong>Microcap 250 scan is on-demand</strong><br>
-          <small>Click the <span style="color:var(--blue);">&#129516; Nifty Microcap 250</span> tab to start scanning 250 stocks.</small>
+          <i class="bi bi-buildings fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
+          Click <strong>&#127981; SME</strong> tab or <strong>Refresh</strong> to load SME rankings.
         </div>
       </td></tr></tbody></table>
     </div>
   </div>
+
+  <!-- Score Legend -->
+  <div style="padding: 8px 18px 14px; font-size: 0.72rem; color: var(--text-muted); display:flex; gap:14px; flex-wrap:wrap;">
+    <span>Fund Score grades:</span>
+    <span class="fund-grade fund-grade-a">A &ge;75</span>
+    <span class="fund-grade fund-grade-b">B &ge;55</span>
+    <span class="fund-grade fund-grade-c">C &ge;35</span>
+    <span class="fund-grade fund-grade-d">D &lt;35</span>
+    <span style="margin-left:8px; color:var(--blue);">&#127981; NSE Emerge</span>
+    <span style="margin-left:4px; color:#38bdf8;">&#127981; BSE SME</span>
+    <span style="margin-left:8px;">Same 12-Factor scoring as Fundamentals tab</span>
+  </div>
 </div>
 
-<!-- ════════════════════════════════ TAB 3: Sector Momentum ════════════════════════════════ -->
+<!-- ════════════════════════════════ TAB: Sector Momentum ════════════════════════════════ -->
 <div class="tab-pane" id="tab-sectors">
   <div class="statbar">
     <div class="stat-pill">
@@ -547,8 +772,14 @@
       <i class="bi bi-arrow-clockwise spin"></i>
       Refresh
     </button>
+    <div class="date-picker-wrap" title="Pick a date for historical sector momentum — leave blank for live data">
+      <label for="sec-date">&#128197; Date</label>
+      <input type="date" id="sec-date" class="date-inp" title="Historical date (leave blank for live)" />
+    </div>
+    <span class="hist-badge" id="sec-hist-badge"></span>
+    <button class="live-btn" id="sec-live-btn" onclick="secClearDate()">&#9889; Live</button>
     <div style="margin-left:auto; font-size:0.72rem; color:var(--text-muted); padding: 5px 12px;">
-      Live NSE sector indices — Nifty Bank, IT, Auto, Pharma, FMCG&hellip; ranked by composite momentum (20D return + RS vs Nifty500)
+      Live NSE sector indices — ranked by swing momentum (5D return + 5D RS vs Nifty500 + RSI-9 + MACD) for 1–10 day trades
     </div>
   </div>
 
@@ -575,19 +806,95 @@
       <table><thead><tr>
         <th style="width:42px;">#</th>
         <th>Sector Index</th>
-        <th>5D Return</th>
-        <th>20D Return</th>
-        <th>50D Return</th>
-        <th>RSI&thinsp;14</th>
-        <th>vs EMA20</th>
+        <th>3D Ret</th>
+        <th>5D Ret</th>
+        <th>RSI&thinsp;9</th>
+        <th>vs EMA9</th>
         <th>Trend</th>
-        <th>RS vs Nifty500</th>
-        <th>Score</th>
+        <th>5D RS vs Nifty</th>
+        <th>MACD Hist%</th>
+        <th>Swing Score</th>
       </tr></thead>
       <tbody id="sec-all-body"><tr><td colspan="10">
         <div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2"></i>Loading…</div>
       </td></tr></tbody></table>
     </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════ TAB 5: Fundamentals ════════════════════════════════ -->
+<div class="tab-pane" id="tab-fund">
+  <div class="statbar">
+    <div class="stat-pill">
+      <i class="bi bi-gem text-warning"></i>
+      <div><div class="stat-label">Passed Gates</div><div class="stat-value" id="fund-count">--</div></div>
+    </div>
+    <div class="stat-pill">
+      <i class="bi bi-clock-history text-info"></i>
+      <div><div class="stat-label">Based On</div><div class="stat-value" id="fund-source" style="font-size:0.72rem;">--</div></div>
+    </div>
+    <button class="rescan-btn" id="fund-refresh-btn" onclick="fundLoad(true)" title="Refresh fundamental rankings">
+      <i class="bi bi-arrow-clockwise icon"></i>
+      <i class="bi bi-arrow-clockwise spin"></i>
+      Refresh
+    </button>
+    <div style="margin-left:auto; font-size:0.72rem; color:var(--text-muted); padding:5px 12px;">
+      Top 30 Strong Fundamentals &mdash; ROCE &ge;12% &middot; ROE &ge;12% &middot; D/E &le;1.0 &middot; Profit Growth &ge;8% &middot; Sales Growth &ge;5%
+    </div>
+  </div>
+
+  <div class="main-card">
+    <div class="card-head">
+      <div style="font-weight:600; font-size:0.92rem;">
+        <i class="bi bi-gem text-warning me-2"></i>
+        Top 30 &mdash; Strong Fundamental Quality Rankings
+      </div>
+      <span class="badge bg-warning text-dark" id="fund-result-count" style="font-size:0.75rem;">0 stocks</span>
+    </div>
+    <div id="fund-loading-msg" class="scanning-msg" style="display:none;">
+      <div class="spinner-border text-warning mb-3" role="status" style="width:2.5rem;height:2.5rem;"></div>
+      <div class="scan-status-txt" style="font-size:0.95rem;">Fetching fundamental data (ROE, Promoter %, Sales Growth)&hellip;</div>
+      <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">Fetched from Screener.in cache &mdash; usually instant.</div>
+    </div>
+    <div class="table-responsive">
+      <table><thead><tr>
+        <th style="width:38px;">#</th>
+        <th>Ticker</th>
+        <th title="Current market price from NSE / Screener">Price</th>
+        <th>Mkt Cap</th>
+        <th title="Debt-to-Equity ratio — lower is better (0 = debt-free, >2 = risky)">D/E</th>
+        <th title="Return on Capital Employed — capital efficiency; ROE sub-line">ROCE %</th>
+        <th title="Promoter stake in the company">Promoter</th>
+        <th title="FII + DII combined — smart money confidence">Inst %</th>
+        <th title="PEG = P/E ÷ Earnings Growth — Growth At Reasonable Price (< 1 = cheap); PE sub-line">PEG</th>
+        <th title="CFO Yield = Cash from Operations ÷ Market Cap × 100 — real cash generation">CFO Yield</th>
+        <th title="3-Year Compounded Sales Growth; 10Y sub-line">Sales 3Y</th>
+        <th title="3-Year Profit Growth CAGR; 10Y sub-line">Profit 3Y</th>
+        <th title="Composite fundamental quality score (12 factors: ROCE, ROE, D/E, CFO, Growth, PEG, Graham MOS, Promoter, Inst%, EY, MCap, Div)">Fund Score</th>
+      </tr></thead>
+      <tbody id="fund-results-body"><tr><td colspan="13">
+        <div class="empty-state">
+          <i class="bi bi-gem fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
+          Click <strong>&#128142; Fundamentals</strong> tab or <strong>Refresh</strong> to load rankings.
+        </div>
+      </td></tr></tbody></table>
+    </div>
+  </div>
+
+  <!-- Score Legend -->
+  <div style="padding: 8px 18px 14px; font-size: 0.72rem; color: var(--text-muted); display:flex; gap:14px; flex-wrap:wrap;">
+    <span>Hard Gates (ALL must pass):</span>
+    <span style="color:var(--green);">ROCE &ge;12%</span>
+    <span style="color:var(--green);">ROE &ge;12%</span>
+    <span style="color:var(--green);">D/E &le;1.0</span>
+    <span style="color:var(--green);">Profit Growth &ge;8%</span>
+    <span style="color:var(--green);">Sales Growth &ge;5%</span>
+    <span style="margin-left:8px;">Fund Score grades:</span>
+    <span class="fund-grade fund-grade-a">A &ge;65</span>
+    <span class="fund-grade fund-grade-b">B &ge;45</span>
+    <span class="fund-grade fund-grade-c">C &ge;25</span>
+    <span class="fund-grade fund-grade-d">D &lt;25</span>
+    <span style="margin-left:8px;">Score: ROCE(15)+ROE hist(8)+Promoter(5)+D/E(10)+CR(5)+CFO(12)+SalesGrowth(10)+ProfitGrowth(5)+Inst%(5)+PEG(10)+EY(5)+Graham(7)+MCap(3)+Div bonus(2)+PG10Y bonus(2)</span>
   </div>
 </div>
 
@@ -725,6 +1032,32 @@ document.addEventListener('DOMContentLoaded', function() {
   var label = document.getElementById('theme-label');
   if (icon)  icon.textContent  = saved === 'light' ? '🌙' : '☀️';
   if (label) label.textContent = saved === 'light' ? 'Dark'  : 'Light';
+
+  // Swing Trades date picker
+  _initDatePicker('swing-date', function() {
+    var d = document.getElementById('swing-date').value;
+    if (d) swingLoadHistorical(d);
+    else   swingClearDate();
+  });
+
+  // Stock Momentum date picker
+  _initDatePicker('mom-date', function() {
+    var d = document.getElementById('mom-date').value;
+    if (d) momLoad();            // momLoad reads mom-date internally
+    else   momClearDate();
+  });
+
+  // Morning Star date picker
+  _initDatePicker('mmom-date', function() {
+    var d = document.getElementById('mmom-date').value;
+    if (d) mmomLoad();           // mmomLoad reads mmom-date internally and fetches historical
+    else   mmomClearDate();
+  });
+
+  // Sector Momentum date picker
+  _initDatePicker('sec-date', function() {
+    if (activeTab === 'sectors') sectorsLoad(false);
+  });
 });
 
 // ── Shared UI helpers ────────────────────────────────────────────────────────
@@ -786,42 +1119,53 @@ function fmtPct(v) {
 }
 
 // ── Tab switcher ───────────────────────────────────────────────────────────
-var activeTab = 'n500';
-var mcTabEverVisited = false;   // tracks first MC tab visit
+var activeTab = 'swing';
 
 function switchTab(name) {
-  // Stop any background sector polling when leaving the sectors tab
   if (name !== 'sectors' && _secPollTimer) {
     clearTimeout(_secPollTimer);
     _secPollTimer = null;
   }
   activeTab = name;
-  ['n500','mc250','sectors','search'].forEach(function(t) {
+  ['swing','momentum','morningmom','fund','sme','sectors','search'].forEach(function(t) {
     document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
     document.getElementById('tab-' + t).classList.toggle('active', t === name);
   });
-  if (name === 'n500') {
-    // Notify backend that Nifty500 tab is active.
-    // When AUTO_RESCAN=True this will also trigger a fresh scan if results are stale.
+
+  // Signal the server which tab is active so it can cancel inactive BG workers
+  fetch('/api/tab-active?tab=' + encodeURIComponent(name), {method: 'POST'}).catch(function(){});
+
+  if (name === 'swing') {
     fetch('/api/trigger', {method: 'POST'}).catch(function(){});
-    if (!n5ES) n5Connect();
+    if (!swingN5ES) swingConnect();
+  } else {
+    // Disconnect SSE when leaving swing tab (saves bandwidth; reconnects on return)
+    if (swingN5ES) { swingN5ES.close(); swingN5ES = null; }
+    if (swingMcES) { swingMcES.close(); swingMcES = null; }
   }
-  if (name === 'mc250') {
-    // Always notify backend that Microcap tab is now active.
-    // This pauses Nifty500 auto-rescanning while user is here.
-    if (!mcTabEverVisited) {
-      mcTabEverVisited = true;
-      mcTriggerAndConnect();   // first visit: trigger scan + connect SSE
-    } else {
-      // Subsequent visits: just notify backend (suppresses N500 auto-rescan)
-      // and optionally trigger MC scan if AUTO_RESCAN is on (backend decides).
+  if (name === 'momentum') {
+    // Only trigger OHLCV scans on the very first visit (before any data has loaded).
+    // Re-triggering on subsequent visits would restart completed scans and cause the
+    // momentum tab to keep showing "scanning…" / retrying even after data is fresh.
+    // Swing-tab SSE connections keep the underlying scan data live in AUTO_RESCAN mode.
+    if (!_momLoaded) {
+      fetch('/api/trigger', {method: 'POST'}).catch(function(){});
       fetch('/api/microcap/trigger', {method: 'POST'}).catch(function(){});
-      if (!mcES) mcConnect();
     }
   }
-  if (name === 'sectors') {
-    sectorsLoad();
+  if (name === 'morningmom') {
+    if (!_mmomLoaded) {
+      // Kick the dedicated morning-star scan on first visit.
+      // No need to trigger full swing scans — morning-star scan uses its own
+      // cache-first OHLCV loading independent of the swing-trade pipeline.
+      fetch('/api/morning-momentum/rescan', {method: 'POST'}).catch(function(){});
+    }
   }
+  if (name === 'sectors')   sectorsLoad();
+  if (name === 'fund')      fundLoad();
+  if (name === 'sme')       smeLoad();
+  if (name === 'momentum')  momLoad();
+  if (name === 'morningmom') mmomLoad();
 }
 
 function setStatus(status) {
@@ -835,75 +1179,6 @@ function setStatus(status) {
   text.textContent = labels[status] || status;
 }
 
-// ── Shared row renderer ────────────────────────────────────────────────────
-function renderRows(data, tbodyId, countId, mode) {
-  var tbody = document.getElementById(tbodyId);
-  document.getElementById(countId).textContent =
-    data.length ? (data.length + ' stock' + (data.length !== 1 ? 's' : '')) : '0 stocks';
-  if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="11"><div class="empty-state">' +
-      '<i class="bi bi-search fs-2 d-block mb-2"></i>No stocks match all criteria' +
-      (mode === 'historical' ? ' for this date' : ' right now') + '.</div></td></tr>';
-    return;
-  }
-  tbody.innerHTML = data.map(function(s, i) {
-    var rank = i + 1;
-    var rankCls = rank <= 3 ? 'rank-' + rank : '';
-    var ticker  = s.display_ticker || s.ticker.replace('.NS','');
-    var slVal   = s.stop_loss != null ? s.stop_loss : null;
-    var slRisk  = (slVal != null && s.price) ? (s.price - slVal) / s.price * 100 : null;
-    var adxCls  = s.adx >= 40 ? 'rsi-high' : s.adx >= 30 ? 'rsi-ok' : '';
-    var vsSecCls = (s.stock_vs_sector != null)
-      ? (s.stock_vs_sector >= 0 ? 'vs-sector-pos' : 'vs-sector-neg') : '';
-    var r1m = s.return_20d != null ? s.return_20d : s.return_1m;
-    var r3m = s.return_3m;
-    var fundParts = [];
-    if (s.debt_equity != null) fundParts.push('D/E ' + s.debt_equity);
-    if (s.market_cap_cr) fundParts.push('MCap &#8377;' + s.market_cap_cr + 'Cr');
-    if (s.avg_tv_20d_cr) fundParts.push('TV &#8377;' + s.avg_tv_20d_cr + 'Cr');
-    return '<tr>' +
-      '<td><div class="rank-badge ' + rankCls + ' mx-auto">' + rank + '</div></td>' +
-      '<td>' +
-        '<div class="ticker-sym">' + ticker + '</div>' +
-        '<div class="company-name">' + (s.name||'') + '</div>' +
-        (r3m != null ? '<div class="sector-sub">3M:<span class="' + (r3m>=0?'vs-sector-pos':'vs-sector-neg') + '">' + fmtPct(r3m) + '</span></div>' : '') +
-      '</td>' +
-      '<td class="price-val">&#8377;' + Number(s.price).toLocaleString('en-IN') + '</td>' +
-      '<td>' +
-        '<div class="sl-val">' + (slVal != null ? '&#8377;' + Number(slVal).toLocaleString('en-IN') : '--') + '</div>' +
-        (slRisk != null ? '<div class="sl-sub">&minus;' + slRisk.toFixed(1) + '% risk</div>' : '') +
-        (s.atr14 ? '<div class="sl-sub">ATR14: ' + s.atr14 + '</div>' : '') +
-      '</td>' +
-      '<td>' +
-        '<span class="vol-badge">Z:' + (s.vol_zscore != null ? Number(s.vol_zscore).toFixed(2) : '--') + '</span>' +
-        (s.rel_vol_pct != null ? '<div class="sector-sub">RVPct:' + Number(s.rel_vol_pct).toFixed(0) + '%</div>' : '') +
-      '</td>' +
-      '<td>' +
-        '<span class="' + rsiClass(s.rsi) + '">' + (s.rsi||'--') + '</span>' +
-        (s.weekly_rsi ? '<div class="sector-sub ' + rsiClass(s.weekly_rsi) + '">W:' + s.weekly_rsi + '</div>' : '') +
-      '</td>' +
-      '<td>' +
-        '<span class="' + adxCls + '" style="font-family:monospace;">' + (s.adx||'--') + '</span>' +
-        '<div class="sector-sub">+DI:' + (s.pdi||'?') + ' &minus;DI:' + (s.ndi||'?') + '</div>' +
-      '</td>' +
-      '<td class="dma-val">' +
-        (s.price_vs_ema20 != null ? ((s.price_vs_ema20>=0?'+':'') + s.price_vs_ema20 + '% vs EMA20') : '--') +
-        (s.ema20_vs_50 != null ? '<div class="sector-sub">EMA20 ' + (s.ema20_vs_50>=0?'+':'') + s.ema20_vs_50 + '% &gt; EMA50</div>' : '') +
-      '</td>' +
-      '<td>' +
-        '<span class="badge sec-badge bg-' + sectorColor(s.sector) + '">' + (s.sector||'--') + '</span>' +
-        (fundParts.length ? '<div class="sector-sub">' + fundParts.join(' &middot; ') + '</div>' : '') +
-      '</td>' +
-      '<td>' +
-        (s.rs_ratio != null ? '<span class="' + (s.rs_ratio>=1.03?'vs-sector-pos':'') + '">RS ' + Number(s.rs_ratio).toFixed(4) + '</span>' : '--') +
-        (s.rs_outperf_pct != null ? '<div class="sector-sub">' + fmtPct(s.rs_outperf_pct) + ' vs Index</div>' : '') +
-        (r1m != null ? '<div class="sector-sub">20D:' + fmtPct(r1m) + '</div>' : '') +
-        '<div class="sector-sub ' + vsSecCls + '">Sec:' + fmtPct(s.stock_vs_sector) + '</div>' +
-      '</td>' +
-      '<td><span class="score-num">' + s.score + '</span></td>' +
-      '</tr>';
-  }).join('');
-}
 
 // ══════════════════════════ CONFIG CRITERIA PILL ══════════════════════════
 (function() {
@@ -954,318 +1229,1010 @@ function renderRows(data, tbodyId, countId, mode) {
   fetch('/api/config')
     .then(function(r) { return r.json(); })
     .then(function(cfg) {
-      renderCriteriaPill(cfg, 'n5-criteria-pill',  'Nifty500');
-      renderCriteriaPill(cfg, 'mc-criteria-pill',  'Microcap250');
+      renderCriteriaPill(cfg, 'swing-criteria-pill', 'Nifty500 + Microcap250');
     })
     .catch(function() {
-      ['n5-criteria-pill','mc-criteria-pill'].forEach(function(id) {
-        var el = document.getElementById(id);
-        if (el) el.textContent = 'Filter criteria unavailable.';
-      });
+      var el = document.getElementById('swing-criteria-pill');
+      if (el) el.textContent = 'Filter criteria unavailable.';
     });
 })();
 
-// ══════════════════════════ NIFTY 500 ══════════════════════════════════════
-var n5Mode = 'live', n5ES = null, n5NextScan = null, n5Total = 500;
-var n5LastUpdatedStr = null;   // raw "YYYY-MM-DD HH:MM:SS IST" string from server
+// ══════════════════════════ SWING TRADES (N500 + MC250) ══════════════════
+var _swingN5Data   = [];
+var _swingMcData   = [];
+var _swingN5Status = 'initializing';
+var _swingMcStatus = 'idle';
+var swingN5ES      = null;
+var swingMcES      = null;
+var swingN5NextScan = null;
+var swingMcNextScan = null;
+var swingN5LastUpdated = null;
+var swingMcLastUpdated = null;
+
+// Merge N500 + MC250, add "from" field, sort by score desc
+function mergeSwingData() {
+  var n5 = _swingN5Data.map(function(s) { return Object.assign({}, s, {from: 'Nifty 500'}); });
+  var mc = _swingMcData.map(function(s) { return Object.assign({}, s, {from: 'Microcap 250'}); });
+  return n5.concat(mc).sort(function(a, b) { return (b.score || 0) - (a.score || 0); });
+}
+
+function _swingUpdateUI() {
+  var combined = mergeSwingData();
+  document.getElementById('swing-qualified').textContent = combined.length;
+  document.getElementById('swing-n5-status').textContent =
+    (_swingN5Status === 'scanning'     ? '⟳ Scanning...' :
+     _swingN5Status === 'complete'     ? '✓ ' + _swingN5Data.length + ' / 500' :
+     _swingN5Status === 'error'        ? '✗ Error'  : '... / 500');
+  document.getElementById('swing-mc-status').textContent =
+    (_swingMcStatus === 'scanning'     ? '⟳ Scanning...' :
+     _swingMcStatus === 'complete'     ? '✓ ' + _swingMcData.length + ' / 250' :
+     _swingMcStatus === 'idle'         ? 'Starting...'    :
+     _swingMcStatus === 'error'        ? '✗ Error'  : '... / 250');
+  var overall = (_swingN5Status === 'scanning' || _swingMcStatus === 'scanning') ? 'scanning' :
+                (_swingN5Status === 'error'    || _swingMcStatus === 'error')    ? 'error'    :
+                (_swingN5Status === 'complete' || _swingMcStatus === 'complete') ? 'complete' : 'initializing';
+  setStatus(overall);
+  _setRescanBtn('swing-rescan-btn', overall);
+  if (overall === 'scanning' || overall === 'initializing')
+    document.getElementById('swing-scanning-msg').classList.add('show');
+  else
+    document.getElementById('swing-scanning-msg').classList.remove('show');
+  var latest = null;
+  if (swingN5LastUpdated && swingMcLastUpdated)
+    latest = swingN5LastUpdated > swingMcLastUpdated ? swingN5LastUpdated : swingMcLastUpdated;
+  else
+    latest = swingN5LastUpdated || swingMcLastUpdated;
+  if (latest) {
+    document.getElementById('swing-last-scan-ago').textContent = timeAgo(latest);
+    document.getElementById('swing-last-scan-ago').title = latest;
+    document.getElementById('last-updated').textContent = latest;
+  }
+}
+
+function swingRescan() {
+  _swingN5Status = 'scanning'; _swingMcStatus = 'scanning';
+  _swingUpdateUI();
+  document.getElementById('swing-scan-msg-text').textContent = 'Refreshing Nifty 500 + Microcap 250...';
+  fetch('/api/rescan',          {method: 'POST'}).catch(function(){});
+  fetch('/api/microcap/rescan', {method: 'POST'}).catch(function(){});
+}
 
 // ── Time-ago helper ──────────────────────────────────────────────────────────
 function timeAgo(istStr) {
-  // Parse "YYYY-MM-DD HH:MM:SS IST" into a local Date (IST = UTC+5:30)
   if (!istStr) return '--';
   var m = istStr.match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
   if (!m) return istStr;
-  // Build UTC millis: IST = UTC + 330 min
   var utcMs = Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]) - 330*60*1000;
-  var diffMs = Date.now() - utcMs;
-  var diffMin = Math.floor(diffMs / 60000);
+  var diffMin = Math.floor((Date.now() - utcMs) / 60000);
   if (diffMin < 1)  return 'just now';
   if (diffMin < 60) return diffMin + ' min ago';
   var h = Math.floor(diffMin / 60), rm = diffMin % 60;
   return h + 'h ' + (rm > 0 ? rm + 'm ' : '') + 'ago';
 }
-
-// ── Refresh every 30s so "X min ago" stays current ──────────────────────────
 setInterval(function() {
-  if (n5LastUpdatedStr) {
-    document.getElementById('n5-last-scan-ago').textContent = timeAgo(n5LastUpdatedStr);
-    document.getElementById('n5-last-scan-ago').title = n5LastUpdatedStr;
-  }
-  if (mcLastUpdatedStr) {
-    document.getElementById('mc-last-scan-ago').textContent = timeAgo(mcLastUpdatedStr);
-    document.getElementById('mc-last-scan-ago').title = mcLastUpdatedStr;
-  }
+  if (swingN5LastUpdated || swingMcLastUpdated) _swingUpdateUI();
 }, 30000);
 
-// ── N500 Refresh button ──────────────────────────────────────────────────────
-function n5Rescan() {
-  _setRescanBtn('n5-rescan-btn', 'scanning');
-  // Immediately show loading state in the table so any stale "No stocks" message disappears
-  document.getElementById('n5-scan-msg-text').textContent = 'Refreshing Nifty 500 scan...';
-  document.getElementById('n5-scanning-msg').classList.add('show');
-  document.getElementById('n5-results-body').innerHTML =
-    '<tr><td colspan="11"><div class="empty-state">' +
-    '<div class="spinner-border text-primary mb-3" style="width:2rem;height:2rem;"></div><br>' +
-    '<strong>Scan in progress...</strong><br>' +
-    '<small style="color:var(--text-muted);">Downloading &amp; analysing 500 tickers. Results will appear automatically.</small>' +
-    '</div></td></tr>';
-  document.getElementById('n5-result-count').textContent = '';
-  fetch('/api/rescan', {method: 'POST'})
-    .catch(function() {
-      _setRescanBtn('n5-rescan-btn', 'idle');
-      document.getElementById('n5-scanning-msg').classList.remove('show');
-    });
-  // Spinner clears automatically when SSE reports status → complete/error
-}
-
-function _n5SetRescanBtn(status) { _setRescanBtn('n5-rescan-btn', status); }
-
-_initDatePicker('n5-date', function() {
-  if (!this.value) n5SwitchToLive(); else n5SwitchToHistorical(this.value);
-});
-function n5SwitchToLive() {
-  n5Mode = 'live';
-  document.getElementById('n5-date').value = '';
-  document.getElementById('n5-hist-badge').classList.remove('show');
-  document.getElementById('n5-live-btn').classList.remove('show');
-  n5NextScan = null;
-  n5Connect();
-}
-function n5SwitchToHistorical(d) {
-  n5Mode = 'historical';
-  if (n5ES) { n5ES.close(); n5ES = null; }
-  document.getElementById('n5-hist-badge').textContent = 'Historical: ' + d;
-  document.getElementById('n5-hist-badge').classList.add('show');
-  document.getElementById('n5-live-btn').classList.add('show');
-  document.getElementById('n5-scan-msg-text').textContent = 'Running historical scan for ' + d + '...';
-  document.getElementById('n5-scanning-msg').classList.add('show');
-  document.getElementById('n5-results-body').innerHTML =
-    '<tr><td colspan="11"><div class="empty-state"><div class="spinner-border text-primary mb-3" style="width:2rem;height:2rem;"></div><br>Scanning <strong>' + d + '</strong>...</div></td></tr>';
-  fetch('/api/snapshot?date=' + d)
-    .then(function(r){return r.json();})
-    .then(function(j) {
-      document.getElementById('n5-scanning-msg').classList.remove('show');
-      if (j.error) {
-        document.getElementById('n5-results-body').innerHTML = '<tr><td colspan="11"><div class="empty-state text-danger">' + j.error + '</div></td></tr>';
-        return;
-      }
-      document.getElementById('n5-qualified').textContent = j.filters_passed;
-      document.getElementById('last-updated').textContent  = j.last_updated || ('As of '+d);
-      renderRows(j.data, 'n5-results-body', 'n5-result-count', 'historical');
-    })
-    .catch(function() {
-      document.getElementById('n5-scanning-msg').classList.remove('show');
-      document.getElementById('n5-results-body').innerHTML = '<tr><td colspan="11"><div class="empty-state text-danger">Network error.</div></td></tr>';
-    });
-}
-_startCountdown(
-  function(){ return n5Mode; },
-  function(){ return n5NextScan; },
-  function(v){ n5NextScan = v; },
-  'n5-countdown'
-);
-function n5Connect() {
-  if (n5Mode !== 'live') return;
-  if (n5ES) n5ES.close();
-  n5ES = new EventSource('/api/stream');
-  var lastHash = null;
-  n5ES.onmessage = function(e) {
-    if (n5Mode !== 'live') { n5ES.close(); return; }
-    var st = JSON.parse(e.data);
-    setStatus(st.status);
-    if (st.total_tickers) n5Total = st.total_tickers;
-    if (st.scan_stage) document.getElementById('n5-scan-msg-text').textContent = st.scan_stage;
-    if (st.next_scan_in != null) n5NextScan = st.next_scan_in;
-    if (st.last_updated) {
-      document.getElementById('last-updated').textContent = 'N500: ' + st.last_updated;
-      n5LastUpdatedStr = st.last_updated;
-      document.getElementById('n5-last-scan-ago').textContent = timeAgo(st.last_updated);
-      document.getElementById('n5-last-scan-ago').title = st.last_updated;
-    }
-    if (st.server_time)  document.getElementById('server-time').textContent   = st.server_time;
-    if (st.scan_count != null) document.getElementById('n5-scan-count').textContent = st.scan_count;
-    if (st.filters_passed != null) document.getElementById('n5-qualified').textContent = st.filters_passed;
-    _n5SetRescanBtn(st.status);
-    if (st.status === 'scanning' || st.status === 'initializing')
-      document.getElementById('n5-scanning-msg').classList.add('show');
-    else
-      document.getElementById('n5-scanning-msg').classList.remove('show');
-    // ── Regime warning banner ──
-    var regBanner = document.getElementById('n5-regime-banner');
-    if (st.regime_ok === false) {
-      document.getElementById('n5-regime-msg').textContent = st.regime_summary || '';
-      regBanner.classList.add('show');
-    } else {
-      regBanner.classList.remove('show');
-    }
-    var h = st.scan_count+'|'+st.status+'|'+(st.scan_stage||'');
-    if (h !== lastHash) {
-      lastHash = h;
-      if (st.data != null && st.status === 'complete') {
-        renderRows(st.data, 'n5-results-body', 'n5-result-count', 'live');
-      }
-    }
-    // Auto-refresh sectors tab when N500 scan completes and sectors tab is open
-    if (st.status === 'complete' && activeTab === 'sectors') {
-      if (_secPollTimer) { clearTimeout(_secPollTimer); _secPollTimer = null; }
-      sectorsLoad();
-    }
-  };
-  n5ES.addEventListener('heartbeat', function(e) {
-    if (n5Mode !== 'live') return;
-    var hb = JSON.parse(e.data);
-    if (hb.server_time) document.getElementById('server-time').textContent = hb.server_time;
-    if (hb.next_scan_in != null) n5NextScan = hb.next_scan_in;
-  });
-  n5ES.onerror = function() { if (n5Mode!=='live') return; n5ES.close(); n5ES=null; setTimeout(n5Connect,5000); };
-}
-
-// ══════════════════════════ MICROCAP 250 ═══════════════════════════════════
-var mcMode = 'live', mcES = null, mcNextScan = null, mcTotal = 250;
-var mcLastUpdatedStr = null;   // raw "YYYY-MM-DD HH:MM:SS IST" string from server
-
-// ── MC Refresh button ────────────────────────────────────────────────────────
-function mcRescan() {
-  _setRescanBtn('mc-rescan-btn', 'scanning');
-  // Immediately show loading state in the table so the stale "No stocks" message disappears
-  document.getElementById('mc-scan-msg-text').textContent = 'Refreshing Microcap 250 scan...';
-  document.getElementById('mc-scanning-msg').classList.add('show');
-  document.getElementById('mc-results-body').innerHTML =
-    '<tr><td colspan="11"><div class="empty-state">' +
-    '<div class="spinner-border text-info mb-3" style="width:2rem;height:2rem;"></div><br>' +
-    '<strong>Scan in progress...</strong><br>' +
-    '<small style="color:var(--text-muted);">Downloading &amp; analysing 250 tickers. Results will appear automatically.</small>' +
-    '</div></td></tr>';
-  document.getElementById('mc-result-count').textContent = '';
-  fetch('/api/microcap/rescan', {method: 'POST'})
-    .catch(function() {
-      _setRescanBtn('mc-rescan-btn', 'idle');
-      document.getElementById('mc-scanning-msg').classList.remove('show');
-    });
-  // Safety fallback: poll until scan completes if SSE misses the event
-  function _mcPollUntilDone() {
-    fetch('/api/microcap/results')
-      .then(function(r) { return r.json(); })
-      .then(function(j) {
-        if (j.status !== 'scanning' && j.status !== 'initializing') {
-          _setRescanBtn('mc-rescan-btn', j.status);
-        } else {
-          setTimeout(_mcPollUntilDone, 5000);
-        }
-      })
-      .catch(function() { /* ignore, SSE will handle */ });
+// ── Shared row builder ─────────────────────────────────────────────────────
+function _buildSwingRow(s, rank, withFrom) {
+  var rankCls  = rank <= 3 ? 'rank-' + rank : '';
+  var ticker   = s.display_ticker || s.ticker.replace('.NS','');
+  var slVal    = s.stop_loss != null ? s.stop_loss : null;
+  var slRisk   = (slVal != null && s.price) ? (s.price - slVal) / s.price * 100 : null;
+  var adxCls   = s.adx >= 40 ? 'rsi-high' : s.adx >= 30 ? 'rsi-ok' : '';
+  var vsSecCls = (s.stock_vs_sector != null) ? (s.stock_vs_sector >= 0 ? 'vs-sector-pos' : 'vs-sector-neg') : '';
+  var r1m = s.return_20d != null ? s.return_20d : s.return_1m;
+  var r3m = s.return_3m;
+  var fundParts = [];
+  if (s.debt_equity != null) fundParts.push('D/E ' + s.debt_equity);
+  if (s.market_cap_cr)       fundParts.push('MCap &#8377;' + s.market_cap_cr + 'Cr');
+  if (s.avg_tv_20d_cr)       fundParts.push('TV &#8377;' + s.avg_tv_20d_cr + 'Cr');
+  var fromCell = '';
+  if (withFrom) {
+    var fromLbl = s.from || '--';
+    var fromCls = s.from === 'Nifty 500' ? 'from-n500' : 'from-mc250';
+    fromCell = '<td class="' + fromCls + '" style="white-space:nowrap;">' + fromLbl + '</td>';
   }
-  setTimeout(_mcPollUntilDone, 5000);
+  return '<tr>' +
+    '<td><div class="rank-badge ' + rankCls + ' mx-auto">' + rank + '</div></td>' +
+    fromCell +
+    '<td>' +
+      '<div class="ticker-sym">' + ticker + '</div>' +
+      '<div class="company-name">' + (s.name||'') + '</div>' +
+      (r3m != null ? '<div class="sector-sub">3M:<span class="' + (r3m>=0?'vs-sector-pos':'vs-sector-neg') + '">' + fmtPct(r3m) + '</span></div>' : '') +
+    '</td>' +
+    '<td class="price-val">&#8377;' + Number(s.price).toLocaleString('en-IN') + '</td>' +
+    '<td>' +
+      '<div class="sl-val">' + (slVal != null ? '&#8377;' + Number(slVal).toLocaleString('en-IN') : '--') + '</div>' +
+      (slRisk != null ? '<div class="sl-sub">&minus;' + slRisk.toFixed(1) + '% risk</div>' : '') +
+      (s.atr14 ? '<div class="sl-sub">ATR14: ' + s.atr14 + '</div>' : '') +
+    '</td>' +
+    '<td>' +
+      '<span class="vol-badge">Z:' + (s.vol_zscore != null ? Number(s.vol_zscore).toFixed(2) : '--') + '</span>' +
+      (s.rel_vol_pct != null ? '<div class="sector-sub">RVPct:' + Number(s.rel_vol_pct).toFixed(0) + '%</div>' : '') +
+    '</td>' +
+    '<td>' +
+      '<span class="' + rsiClass(s.rsi) + '">' + (s.rsi||'--') + '</span>' +
+      (s.weekly_rsi ? '<div class="sector-sub ' + rsiClass(s.weekly_rsi) + '">W:' + s.weekly_rsi + '</div>' : '') +
+    '</td>' +
+    '<td>' +
+      '<span class="' + adxCls + '" style="font-family:monospace;">' + (s.adx||'--') + '</span>' +
+      '<div class="sector-sub">+DI:' + (s.pdi||'?') + ' &minus;DI:' + (s.ndi||'?') + '</div>' +
+    '</td>' +
+    '<td class="dma-val">' +
+      (s.price_vs_ema20 != null ? ((s.price_vs_ema20>=0?'+':'') + s.price_vs_ema20 + '% vs EMA20') : '--') +
+      (s.ema20_vs_50 != null ? '<div class="sector-sub">EMA20 ' + (s.ema20_vs_50>=0?'+':'') + s.ema20_vs_50 + '% &gt; EMA50</div>' : '') +
+    '</td>' +
+    '<td>' +
+      '<span class="badge sec-badge bg-' + sectorColor(s.sector) + '">' + (s.sector||'--') + '</span>' +
+      (fundParts.length ? '<div class="sector-sub">' + fundParts.join(' &middot; ') + '</div>' : '') +
+    '</td>' +
+    '<td>' +
+      (s.rs_ratio != null ? '<span class="' + (s.rs_ratio>=1.03?'vs-sector-pos':'') + '">RS ' + Number(s.rs_ratio).toFixed(4) + '</span>' : '--') +
+      (s.rs_outperf_pct != null ? '<div class="sector-sub">' + fmtPct(s.rs_outperf_pct) + ' vs Index</div>' : '') +
+      (r1m != null ? '<div class="sector-sub">20D:' + fmtPct(r1m) + '</div>' : '') +
+      '<div class="sector-sub ' + vsSecCls + '">Sec:' + fmtPct(s.stock_vs_sector) + '</div>' +
+    '</td>' +
+    '<td><span class="score-num">' + s.score + '</span></td>' +
+    '</tr>';
 }
 
-function _mcSetRescanBtn(status) { _setRescanBtn('mc-rescan-btn', status); }
-
-_initDatePicker('mc-date', function() {
-  if (!this.value) mcSwitchToLive(); else mcSwitchToHistorical(this.value);
-});
-function mcSwitchToLive() {
-  mcMode = 'live';
-  document.getElementById('mc-date').value = '';
-  document.getElementById('mc-hist-badge').classList.remove('show');
-  document.getElementById('mc-live-btn').classList.remove('show');
-  mcNextScan = null;
-  mcConnect();
+// renderRows kept for Stock Search "historical" compatibility (no From col)
+function renderRows(data, tbodyId, countId, mode) {
+  var tbody = document.getElementById(tbodyId);
+  if (!tbody) return;
+  document.getElementById(countId).textContent =
+    data.length ? (data.length + ' stock' + (data.length !== 1 ? 's' : '')) : '0 stocks';
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="11"><div class="empty-state">' +
+      '<i class="bi bi-search fs-2 d-block mb-2"></i>No stocks match all criteria' +
+      (mode === 'historical' ? ' for this date' : ' right now') + '.</div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.map(function(s, i) { return _buildSwingRow(s, i+1, false); }).join('');
 }
-function mcSwitchToHistorical(d) {
-  mcMode = 'historical';
-  if (mcES) { mcES.close(); mcES = null; }
-  document.getElementById('mc-hist-badge').textContent = 'Historical: ' + d;
-  document.getElementById('mc-hist-badge').classList.add('show');
-  document.getElementById('mc-live-btn').classList.add('show');
-  document.getElementById('mc-scan-msg-text').textContent = 'Running historical scan for ' + d + '...';
-  document.getElementById('mc-scanning-msg').classList.add('show');
-  document.getElementById('mc-results-body').innerHTML =
-    '<tr><td colspan="11"><div class="empty-state"><div class="spinner-border text-info mb-3" style="width:2rem;height:2rem;"></div><br>Scanning Microcap 250 for <strong>' + d + '</strong>...</div></td></tr>';
-  fetch('/api/microcap/snapshot?date=' + d)
-    .then(function(r){return r.json();})
-    .then(function(j) {
-      document.getElementById('mc-scanning-msg').classList.remove('show');
-      if (j.error) {
-        document.getElementById('mc-results-body').innerHTML = '<tr><td colspan="11"><div class="empty-state text-danger">' + j.error + '</div></td></tr>';
-        return;
-      }
-      document.getElementById('mc-qualified').textContent = j.filters_passed;
-      renderRows(j.data, 'mc-results-body', 'mc-result-count', 'historical');
+
+function renderSwingRows(data) {
+  var dateVal = document.getElementById('swing-date').value;
+  var tbody = document.getElementById('swing-results-body');
+  document.getElementById('swing-result-count').textContent =
+    data.length ? (data.length + ' stock' + (data.length !== 1 ? 's' : '')) : '0 stocks';
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="12"><div class="empty-state">' +
+      '<i class="bi bi-search fs-2 d-block mb-2"></i>No stocks match all criteria' +
+      (dateVal ? ' for ' + dateVal : ' right now') + '.</div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.map(function(s, i) { return _buildSwingRow(s, i+1, true); }).join('');
+}
+
+function swingClearDate() {
+  document.getElementById('swing-date').value = '';
+  document.getElementById('swing-hist-badge').textContent = '';
+  document.getElementById('swing-hist-badge').classList.remove('show');
+  document.getElementById('swing-live-btn').classList.remove('show');
+  // Reconnect live SSE if not already connected
+  if (!swingN5ES) swingConnect();
+}
+
+function swingLoadHistorical(date) {
+  // Disconnect live SSE while viewing historical data
+  if (swingN5ES) { swingN5ES.close(); swingN5ES = null; }
+  if (swingMcES) { swingMcES.close(); swingMcES = null; }
+
+  // Show historical badge + clear button
+  var badge = document.getElementById('swing-hist-badge');
+  badge.textContent = '\uD83D\uDCC5 ' + date;
+  badge.classList.add('show');
+  document.getElementById('swing-live-btn').classList.add('show');
+
+  // Show scanning indicator
+  _swingN5Status = 'scanning'; _swingMcStatus = 'scanning';
+  _swingUpdateUI();
+  document.getElementById('swing-scan-msg-text').textContent = 'Loading historical data for ' + date + '\u2026';
+
+  var p1 = fetch('/api/snapshot?date=' + encodeURIComponent(date)).then(function(r){return r.json();});
+  var p2 = fetch('/api/microcap/snapshot?date=' + encodeURIComponent(date)).then(function(r){return r.json();});
+
+  Promise.all([p1, p2])
+    .then(function(res) {
+      var jn5 = res[0], jmc = res[1];
+      _swingN5Status = jn5.error ? 'error' : 'complete';
+      _swingMcStatus = jmc.error ? 'error' : 'complete';
+      _swingN5Data = (jn5.data || []).map(function(s){ return Object.assign({}, s, {from: 'Nifty 500'}); });
+      _swingMcData = (jmc.data || []).map(function(s){ return Object.assign({}, s, {from: 'Microcap 250'}); });
+      swingN5LastUpdated = jn5.last_updated || null;
+      swingMcLastUpdated = jmc.last_updated || null;
+      _swingUpdateUI();
+      renderSwingRows(mergeSwingData());
     })
-    .catch(function() {
-      document.getElementById('mc-scanning-msg').classList.remove('show');
-      document.getElementById('mc-results-body').innerHTML = '<tr><td colspan="11"><div class="empty-state text-danger">Network error.</div></td></tr>';
+    .catch(function(err) {
+      _swingN5Status = 'error'; _swingMcStatus = 'error';
+      _swingUpdateUI();
+      document.getElementById('swing-results-body').innerHTML =
+        '<tr><td colspan="12"><div class="empty-state text-danger"><i class="bi bi-exclamation-triangle fs-2 d-block mb-2"></i>' +
+        'Historical scan failed: ' + err + '</div></td></tr>';
     });
 }
-_startCountdown(
-  function(){ return mcMode; },
-  function(){ return mcNextScan; },
-  function(v){ mcNextScan = v; },
-  'mc-countdown'
-);
-function mcTriggerAndConnect() {
-  // First visit: show scanning spinner, call trigger endpoint, then open SSE
-  document.getElementById('mc-scan-msg-text').textContent = 'Starting Nifty Microcap 250 scan for 250 tickers...';
-  document.getElementById('mc-scanning-msg').classList.add('show');
-  document.getElementById('mc-results-body').innerHTML =
-    '<tr><td colspan="11"><div class="empty-state">' +
-    '<div class="spinner-border text-info mb-3" style="width:2rem;height:2rem;"></div><br>' +
-    '<strong>Starting Microcap 250 scan...</strong><br>' +
-    '<small style="color:var(--text-muted);">First scan takes 5&ndash;10 minutes. Data will appear automatically.</small>' +
-    '</div></td></tr>';
-  fetch('/api/microcap/trigger', {method: 'POST'})
-    .catch(function(){})  // fire-and-forget
-    .finally(function() { mcConnect(); });
-}
 
-function mcConnect() {
-  if (mcMode !== 'live') return;
-  if (mcES) mcES.close();
-  mcES = new EventSource('/api/microcap/stream');
-  var lastHash = null;
-  mcES.onmessage = function(e) {
-    if (mcMode !== 'live') { mcES.close(); return; }
+function swingConnect() {
+  // ── N500 SSE ────────────────────────────────────────────────────────
+  if (swingN5ES) swingN5ES.close();
+  swingN5ES = new EventSource('/api/stream');
+  var n5Hash = null;
+  swingN5ES.onmessage = function(e) {
     var st = JSON.parse(e.data);
-    if (st.total_tickers) mcTotal = st.total_tickers;
-    if (st.scan_stage) document.getElementById('mc-scan-msg-text').textContent = st.scan_stage;
-    if (st.next_scan_in != null) mcNextScan = st.next_scan_in;
+    _swingN5Status = st.status;
+    if (st.scan_stage)   document.getElementById('swing-scan-msg-text').textContent = 'N500: ' + st.scan_stage;
     if (st.server_time)  document.getElementById('server-time').textContent = st.server_time;
-    if (st.scan_count != null) document.getElementById('mc-scan-count').textContent = st.scan_count;
-    if (st.filters_passed != null) document.getElementById('mc-qualified').textContent = st.filters_passed;
-    if (st.last_updated) {
-      mcLastUpdatedStr = st.last_updated;
-      document.getElementById('mc-last-scan-ago').textContent = timeAgo(st.last_updated);
-      document.getElementById('mc-last-scan-ago').title = st.last_updated;
-    }
-    _mcSetRescanBtn(st.status);
-    if (st.status === 'scanning' || st.status === 'initializing')
-      document.getElementById('mc-scanning-msg').classList.add('show');
-    else
-      document.getElementById('mc-scanning-msg').classList.remove('show');
-    // ── Regime warning banner ──
-    var mcRegBanner = document.getElementById('mc-regime-banner');
+    if (st.last_updated) swingN5LastUpdated = st.last_updated;
+    if (st.next_scan_in != null) swingN5NextScan = st.next_scan_in;
+    _swingUpdateUI();
+    var rb = document.getElementById('swing-regime-banner');
     if (st.regime_ok === false) {
-      document.getElementById('mc-regime-msg').textContent = st.regime_summary || '';
-      mcRegBanner.classList.add('show');
-    } else {
-      mcRegBanner.classList.remove('show');
-    }
-    var h = st.scan_count+'|'+st.status+'|'+(st.scan_stage||'');
-    if (h !== lastHash) {
-      lastHash = h;
-      // Render whenever data is present (including empty array on scan complete)
+      document.getElementById('swing-regime-msg').textContent = st.regime_summary || '';
+      rb.classList.add('show');
+    } else { rb.classList.remove('show'); }
+    var h = st.scan_count + '|' + st.status + '|' + (st.scan_stage || '');
+    if (h !== n5Hash) {
+      n5Hash = h;
       if (st.data != null && st.status === 'complete') {
-        renderRows(st.data, 'mc-results-body', 'mc-result-count', 'live');
+        _swingN5Data = st.data;
+        renderSwingRows(mergeSwingData());
+      }
+    }
+    if (st.status === 'complete' && activeTab === 'sectors') sectorsLoad();
+  };
+  swingN5ES.addEventListener('heartbeat', function(e) {
+    var hb = JSON.parse(e.data);
+    if (hb.server_time) document.getElementById('server-time').textContent = hb.server_time;
+    if (hb.next_scan_in != null) swingN5NextScan = hb.next_scan_in;
+  });
+  swingN5ES.onerror = function() { swingN5ES.close(); swingN5ES = null; setTimeout(swingConnect, 5000); };
+
+  // ── MC250 SSE (trigger + connect) ──────────────────────────────────
+  fetch('/api/microcap/trigger', {method: 'POST'}).catch(function(){});
+  if (swingMcES) swingMcES.close();
+  swingMcES = new EventSource('/api/microcap/stream');
+  var mcHash = null;
+  swingMcES.onmessage = function(e) {
+    var st = JSON.parse(e.data);
+    _swingMcStatus = st.status;
+    if (st.scan_stage)   document.getElementById('swing-scan-msg-text').textContent = 'MC250: ' + st.scan_stage;
+    if (st.server_time)  document.getElementById('server-time').textContent = st.server_time;
+    if (st.last_updated) swingMcLastUpdated = st.last_updated;
+    if (st.next_scan_in != null) swingMcNextScan = st.next_scan_in;
+    _swingUpdateUI();
+    var h = st.scan_count + '|' + st.status + '|' + (st.scan_stage || '');
+    if (h !== mcHash) {
+      mcHash = h;
+      if (st.data != null && st.status === 'complete') {
+        _swingMcData = st.data;
+        renderSwingRows(mergeSwingData());
       }
     }
   };
-  mcES.addEventListener('heartbeat', function(e) {
-    if (mcMode !== 'live') return;
+  swingMcES.addEventListener('heartbeat', function(e) {
     var hb = JSON.parse(e.data);
-    if (hb.server_time) document.getElementById('server-time').textContent = hb.server_time;
-    if (hb.next_scan_in != null) mcNextScan = hb.next_scan_in;
+    if (hb.next_scan_in != null) swingMcNextScan = hb.next_scan_in;
   });
-  mcES.onerror = function() { if(mcMode!=='live') return; mcES.close(); mcES=null; setTimeout(mcConnect,5000); };
+  swingMcES.onerror = function() { swingMcES.close(); swingMcES = null; };
+}
+
+
+// ══════════════════════════ STOCK MOMENTUM ════════════════════════════════
+var _momLoaded    = false;
+var _momPollTimer = null;
+var _momScanning  = false;   // true while OHLCV scan is in progress
+
+function momClearDate() {
+  document.getElementById('mom-date').value = '';
+  document.getElementById('mom-hist-badge').textContent = '';
+  document.getElementById('mom-hist-badge').classList.remove('show');
+  document.getElementById('mom-live-btn').classList.remove('show');
+  _momScanning = false;
+  momLoad();
+}
+
+function momLoad() {
+  if (_momPollTimer) { clearTimeout(_momPollTimer); _momPollTimer = null; }
+
+  var btn    = document.getElementById('mom-refresh-btn');
+  var loadEl = document.getElementById('mom-loading-msg');
+  var txtEl  = document.getElementById('mom-loading-text');
+
+  // Show spinner only on first call / explicit refresh, not on silent polls
+  if (!_momScanning) {
+    if (btn)    btn.classList.add('scanning');
+    if (loadEl) loadEl.style.display = 'block';
+    if (txtEl)  txtEl.textContent = 'Scanning Nifty 500 + Microcap 250 (750 tickers)\u2026';
+  }
+
+  var dateVal = document.getElementById('mom-date').value;
+  var url = '/api/stock-momentum' + (dateVal ? '?date=' + encodeURIComponent(dateVal) : '');
+
+  // Historical badge
+  var badge = document.getElementById('mom-hist-badge');
+  var lbtn  = document.getElementById('mom-live-btn');
+  if (dateVal) {
+    badge.textContent = '\uD83D\uDCC5 ' + dateVal;
+    badge.classList.add('show');
+    lbtn.classList.add('show');
+    if (!_momScanning && txtEl)
+      txtEl.textContent = 'Loading historical momentum for ' + dateVal + '\u2026';
+  } else {
+    badge.classList.remove('show');
+    lbtn.classList.remove('show');
+  }
+
+  fetch(url)
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      var stN5  = j.n500_status  || '';
+      var stMc  = j.mc250_status || '';
+      var scanning = (stN5 === 'scanning' || stN5 === 'initializing' ||
+                      stMc === 'scanning' || stMc === 'initializing' ||
+                      j.status === 'scanning' || j.status === 'initializing');
+
+      if (scanning) {
+        _momScanning = true;
+        if (loadEl) loadEl.style.display = 'block';
+        if (txtEl) {
+          var stage = j.scan_stage || '';
+          txtEl.textContent = stage
+            ? 'Scanning 750 tickers\u2026 ' + stage
+            : 'Scanning Nifty 500 + Microcap 250 (750 tickers)\u2026';
+        }
+        document.getElementById('mom-scan-status').innerHTML = '&#8987; Scan in progress\u2026';
+        // Update partial counts if one universe is done
+        document.getElementById('mom-n5-count').textContent =
+          stN5 === 'complete' ? (j.n500_count || 0) + ' stocks' : '\u22ef';
+        document.getElementById('mom-mc-count').textContent =
+          stMc === 'complete' ? (j.mc_count   || 0) + ' stocks' : '\u22ef';
+        // Poll silently in 4 s
+        _momPollTimer = setTimeout(function() {
+          if (activeTab === 'momentum') momLoad();
+        }, 4000);
+        return;   // leave banner up; don't render partial results
+      }
+
+      // --- Scan complete (or errored) ---
+      _momScanning = false;
+      if (_momPollTimer) { clearTimeout(_momPollTimer); _momPollTimer = null; }
+      if (btn)    btn.classList.remove('scanning');
+      if (loadEl) loadEl.style.display = 'none';
+      _momLoaded = true;
+
+      document.getElementById('mom-count').textContent        = j.total || 0;
+      document.getElementById('mom-result-count').textContent = (j.stocks || []).length + ' stocks';
+      document.getElementById('mom-n5-count').textContent     = (j.n500_count || 0) + ' stocks';
+      document.getElementById('mom-mc-count').textContent     = (j.mc_count   || 0) + ' stocks';
+      document.getElementById('mom-scan-status').innerHTML    =
+        j.status === 'complete' ? '&#10003; Up-to-date' : (j.status || '--');
+
+      // Criteria legend
+      var c = j.criteria;
+      if (c) {
+        document.getElementById('mom-leg-rsi').textContent  = c.rsi_min;
+        document.getElementById('mom-leg-wrsi').textContent = c.wrsi_min;
+        document.getElementById('mom-leg-adx').textContent  = c.adx_min;
+        document.getElementById('mom-leg-volz').textContent = c.volz_min;
+        document.getElementById('mom-leg-rs').textContent   = '+' + c.rs_min + '%';
+        document.getElementById('mom-leg-ret').textContent  = '+' + c.ret20_min + '%';
+        var pill = document.getElementById('mom-criteria-pill');
+        if (pill) {
+          pill.innerHTML =
+            '&#9889; RSI&ge;' + c.rsi_min +
+            ' &middot; wRSI&ge;' + c.wrsi_min +
+            ' &middot; ADX&ge;' + c.adx_min + ' <span style="color:var(--green);">&amp; +DI&gt;&minus;DI</span>' +
+            ' &middot; VolZ&ge;' + c.volz_min +
+            ' &middot; RS&ge;+' + c.rs_min + '% vs Idx' +
+            ' &middot; 20D&ge;+' + c.ret20_min + '%' +
+            (c.ret5_min != null ? ' &middot; 5D&ge;+' + c.ret5_min + '%' : '') +
+            ' &middot; <span style="color:var(--blue);">Price&gt;EMA20&gt;EMA50</span>' +
+            ' &middot; Liq&ge;&#8377;' + c.tv_min_cr + 'Cr';
+        }
+      }
+
+      renderMomentum(j.stocks || [], j);
+    })
+    .catch(function(err) {
+      _momScanning = false;
+      if (btn)    btn.classList.remove('scanning');
+      if (loadEl) loadEl.style.display = 'none';
+      document.getElementById('mom-results-body').innerHTML =
+        '<tr><td colspan="12"><div class="empty-state">' +
+        '<i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
+        'Error: ' + err + '</div></td></tr>';
+    });
+}
+
+function renderMomentum(stocks, meta) {
+  var tbody = document.getElementById('mom-results-body');
+  var st = (meta || {}).status || '';
+  var stN5  = (meta || {}).n500_status  || '';
+  var stMc  = (meta || {}).mc250_status || '';
+  var scanning = (stN5 === 'scanning' || stN5 === 'initializing' || stMc === 'scanning');
+  var dateVal  = document.getElementById('mom-date').value;
+  var asOf     = (meta || {}).as_of_date || dateVal;
+
+  if (!stocks || !stocks.length) {
+    var isErr = st === 'error';
+    var msg = scanning
+      ? '<div class="spinner-border text-warning mb-3" style="width:2rem;height:2rem;"></div>' +
+        '<br><strong>Scanning Nifty 500 + Microcap 250 for momentum breakouts&hellip;</strong><br>' +
+        '<small style="color:var(--text-muted);">Scanning all 750 tickers for trend &amp; momentum criteria.<br>Takes 2&ndash;5 min on first run; instant from cache thereafter.</small>'
+      : isErr
+      ? '<i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
+        '<strong>Scan error.</strong>'
+      : '<i class="bi bi-bar-chart-line fs-2 d-block mb-2" style="color:var(--text-muted);"></i>' +
+        'No momentum stocks found' +
+        (asOf ? ' for ' + asOf : ' today') + '.<br>' +
+        '<small style="color:var(--text-muted);">Try a different date or check back after the next trading session.</small>';
+    tbody.innerHTML = '<tr><td colspan="12"><div class="empty-state">' + msg + '</div></td></tr>';
+    return;
+  }
+
+  var medals = ['&#127945;','&#129352;','&#129353;'];
+  tbody.innerHTML = stocks.map(function(s, i) {
+    var rank    = i + 1;
+    var rkCls   = rank <= 3 ? 'rank-' + rank : '';
+    var rankLbl = rank <= 3 ? medals[rank-1] + ' ' + rank : rank;
+
+    // From badge
+    var from    = s.from_index || 'Nifty 500';
+    var fromCls = from === 'Nifty 500' ? 'from-n500' : 'from-mc250';
+    var fromCell= '<td class="' + fromCls + '" style="white-space:nowrap;font-size:0.70rem;font-weight:700;">' + from + '</td>';
+
+    // Price
+    var price    = s.price;
+    var priceStr = price != null
+      ? '<span class="price-val">&#8377;' + Number(price).toLocaleString('en-IN') + '</span>'
+      : '--';
+
+    // RSI / WRSI
+    var rsi   = s.rsi    != null ? Number(s.rsi).toFixed(1)    : '--';
+    var wrsi  = s.weekly_rsi != null ? Number(s.weekly_rsi).toFixed(1) : '--';
+    var rsiCls= s.rsi != null ? rsiClass(s.rsi) : '';
+    var wrsiCls = s.weekly_rsi != null ? rsiClass(s.weekly_rsi) : '';
+    var rsiCell =
+      '<span class="' + rsiCls + '">' + rsi + '</span>' +
+      '<div class="sector-sub ' + wrsiCls + '">W:' + wrsi + '</div>';
+
+    // ADX
+    var adxCls = s.adx >= 40 ? 'rsi-high' : s.adx >= 25 ? 'rsi-ok' : '';
+    var adxCell =
+      '<span class="' + adxCls + '" style="font-family:monospace;">' + (s.adx||'--') + '</span>' +
+      (s.pdi != null ? '<div class="sector-sub">+DI:' + s.pdi + ' &minus;DI:' + (s.ndi||'?') + '</div>' : '');
+
+    // 20D Return
+    var r20  = s.return_20d != null ? s.return_20d : (s.return_1m != null ? s.return_1m : null);
+    var r20c = r20 != null ? (r20 >= 0 ? 'vs-sector-pos' : 'vs-sector-neg') : '';
+    var r20Cell = r20 != null
+      ? '<span class="' + r20c + '">' + (r20 >= 0 ? '+' : '') + Number(r20).toFixed(2) + '%</span>'
+      : '--';
+
+    // RS vs Index
+    var rs   = s.rs_outperf_pct;
+    var rsRatio = s.rs_ratio;
+    var rsCls = rs != null ? (rs >= 5 ? 'vs-sector-pos' : rs >= 0 ? '' : 'vs-sector-neg') : '';
+    var rsCell = rs != null
+      ? '<span class="' + rsCls + '">' + (rs >= 0 ? '+' : '') + Number(rs).toFixed(2) + '%</span>' +
+        (rsRatio != null ? '<div class="sector-sub">RS:' + Number(rsRatio).toFixed(4) + '</div>' : '')
+      : '--';
+
+    // Volume Z / RVPct
+    var vz    = s.vol_zscore;
+    var rvPct = s.rel_vol_pct;
+    var vzHigh = vz != null && vz >= 2, vzMid = vz != null && vz >= 1;
+    var volCell =
+      '<span class="vol-badge">Z:' + (vz != null ? Number(vz).toFixed(2) : '--') + '</span>' +
+      (rvPct != null ? '<div class="sector-sub">RVPct:' + Number(rvPct).toFixed(0) + '%</div>' : '');
+
+    // EMA position
+    var pve20  = s.price_vs_ema20;
+    var e2050  = s.ema20_vs_50;
+    var emaCell =
+      (pve20 != null ? '<span style="font-size:0.80rem;color:' + (pve20>=0?'var(--green)':'var(--red)') + ';">' +
+        (pve20 >= 0 ? '+' : '') + Number(pve20).toFixed(2) + '% vs 20</span>' : '--') +
+      (e2050 != null ? '<div class="sector-sub">' + (e2050 >= 0 ? '+' : '') + Number(e2050).toFixed(2) + '% 20>50</div>' : '');
+
+    // Sector
+    var secCell = '<span class="badge sec-badge bg-' + sectorColor(s.sector) + '">' + (s.sector || '--') + '</span>';
+
+    // Mom Score
+    var ms    = s.mom_score != null ? Number(s.mom_score) : 0;
+    var msPct = Math.min(100, ms).toFixed(0);
+    var msCol = ms >= 75 ? 'var(--green)' : ms >= 50 ? 'var(--blue)' : ms >= 30 ? 'var(--yellow)' : 'var(--text-muted)';
+    var msCell =
+      '<span style="font-family:monospace;font-weight:700;font-size:1rem;color:' + msCol + ';">' + ms.toFixed(1) + '</span>' +
+      '<div class="fund-bar-wrap"><div class="fund-bar-fill" style="width:' + msPct + '%;"></div></div>';
+
+    var ticker = s.display_ticker || (s.ticker || '').replace('.NS','');
+
+    // Candle-date indicator — show the actual last-bar date and flag staleness
+    var filterDate = document.getElementById('mom-date').value;   // '' for live
+    var candleDate = s.candle_date || null;
+    var candleDateCell = '';
+    if (candleDate) {
+      var cdLabel = candleDate;
+      var cdStyle = 'color:var(--text-muted);font-size:0.68rem;';
+      if (filterDate && filterDate !== candleDate) {
+        // Candle is not exactly on the filter date — compute day gap
+        var fd   = new Date(filterDate);
+        var cd   = new Date(candleDate);
+        var gapDays = Math.round((fd - cd) / 86400000);
+        if (gapDays > 3) {
+          cdStyle = 'color:var(--red);font-size:0.68rem;font-weight:700;';
+          cdLabel = '⚠ ' + candleDate + ' (−' + gapDays + 'd)';
+        } else if (gapDays > 0) {
+          cdStyle = 'color:var(--yellow);font-size:0.68rem;';
+          cdLabel = candleDate + ' (−' + gapDays + 'd)';
+        }
+      }
+      candleDateCell = '<div style="' + cdStyle + '">' + cdLabel + '</div>';
+    }
+
+    return '<tr>' +
+      '<td><div class="rank-badge ' + rkCls + ' mx-auto">' + rankLbl + '</div></td>' +
+      fromCell +
+      '<td>' +
+        '<div class="ticker-sym">' + ticker + '</div>' +
+        '<div class="company-name">' + (s.name || '') + '</div>' +
+        (s.stop_loss != null ? '<div class="sl-sub">SL:&#8377;' + Number(s.stop_loss).toLocaleString('en-IN') + '</div>' : '') +
+        candleDateCell +
+      '</td>' +
+      '<td>' + priceStr + '</td>' +
+      '<td>' + rsiCell + '</td>' +
+      '<td>' + adxCell + '</td>' +
+      '<td>' + r20Cell + '</td>' +
+      '<td>' + rsCell  + '</td>' +
+      '<td>' + volCell + '</td>' +
+      '<td>' + emaCell + '</td>' +
+      '<td>' + secCell + '</td>' +
+      '<td>' + msCell   + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+// ══════════════════════════ MORNING STAR ══════════════════════════════
+var _mmomLoaded    = false;
+var _mmomPollTimer = null;
+var _mmomScanning  = false;
+
+function mmomClearDate() {
+  document.getElementById('mmom-date').value = '';
+  document.getElementById('mmom-hist-badge').textContent = '';
+  document.getElementById('mmom-hist-badge').classList.remove('show');
+  document.getElementById('mmom-live-btn').classList.remove('show');
+  _mmomScanning = false;
+  mmomLoad();
+}
+
+function mmomLoad() {
+  if (_mmomPollTimer) { clearTimeout(_mmomPollTimer); _mmomPollTimer = null; }
+
+  var btn    = document.getElementById('mmom-refresh-btn');
+  var loadEl = document.getElementById('mmom-loading-msg');
+  var txtEl  = document.getElementById('mmom-loading-text');
+
+  if (!_mmomScanning) {
+    if (btn)    btn.classList.add('scanning');
+    if (loadEl) loadEl.style.display = 'block';
+    if (txtEl)  txtEl.textContent = 'Checking Morning Star pattern in all 750 tickers\u2026';
+  }
+
+  var dateVal = document.getElementById('mmom-date').value;
+  var url = '/api/morning-momentum' + (dateVal ? '?date=' + encodeURIComponent(dateVal) : '');
+
+  var badge = document.getElementById('mmom-hist-badge');
+  var lbtn  = document.getElementById('mmom-live-btn');
+  if (dateVal) {
+    badge.textContent = '\uD83D\uDCC5 ' + dateVal;
+    badge.classList.add('show');
+    lbtn.classList.add('show');
+    if (!_mmomScanning && txtEl)
+      txtEl.textContent = 'Loading historical Morning Star for ' + dateVal + '\u2026';
+  } else {
+    badge.classList.remove('show');
+    lbtn.classList.remove('show');
+  }
+
+  fetch(url)
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      var stN5 = j.n500_status || '';
+      var stMc = j.mc250_status || '';
+      var scanning = (stN5 === 'scanning' || stN5 === 'initializing' ||
+                      stMc === 'scanning' || stMc === 'initializing' ||
+                      j.status === 'scanning' || j.status === 'initializing');
+
+      if (scanning) {
+        _mmomScanning = true;
+        if (loadEl) loadEl.style.display = 'block';
+        if (txtEl) {
+          var stage = j.scan_stage || '';
+          txtEl.textContent = stage
+            ? 'Scanning 750 tickers\u2026 ' + stage
+            : 'Scanning Nifty 500 + Microcap 250 (750 tickers)\u2026';
+        }
+        document.getElementById('mmom-scan-status').innerHTML = '&#8987; Scan in progress\u2026';
+        document.getElementById('mmom-n5-count').textContent =
+          stN5 === 'complete' ? (j.n500_count || 0) + ' stocks' : '\u22ef';
+        document.getElementById('mmom-mc-count').textContent =
+          stMc === 'complete' ? (j.mc_count   || 0) + ' stocks' : '\u22ef';
+        _mmomPollTimer = setTimeout(function() {
+          if (activeTab === 'morningmom') mmomLoad();
+        }, 4000);
+        return;
+      }
+
+      // --- Scan complete ---
+      _mmomScanning = false;
+      if (_mmomPollTimer) { clearTimeout(_mmomPollTimer); _mmomPollTimer = null; }
+      if (btn)    btn.classList.remove('scanning');
+      if (loadEl) loadEl.style.display = 'none';
+      _mmomLoaded = true;
+
+      document.getElementById('mmom-count').textContent        = j.total || 0;
+      document.getElementById('mmom-result-count').textContent = (j.stocks || []).length + ' stocks';
+      document.getElementById('mmom-n5-count').textContent     = (j.n500_count || 0) + ' stocks';
+      document.getElementById('mmom-mc-count').textContent     = (j.mc_count   || 0) + ' stocks';
+      document.getElementById('mmom-total-mom').textContent = '--';
+      document.getElementById('mmom-scan-status').innerHTML    =
+        j.status === 'complete' ? '&#10003; Up-to-date' : (j.status || '--');
+
+      // Criteria pill — strict morning star pattern
+      var pill = document.getElementById('mmom-criteria-pill');
+      if (pill) {
+        pill.innerHTML =
+          '&#127774; Strict Morning Star &middot; ' +
+          '<span style="color:var(--red);">Day-1 &ge;1% bearish</span> &middot; ' +
+          '<span style="color:var(--yellow);">Star &lt;35%</span> &middot; ' +
+          '<span style="color:var(--green);">Day-3 &ge;50% pen + body &ge;50%</span> &middot; ' +
+          '<span style="color:var(--text-muted);">Liq 3Cr &middot; Drop-3% &middot; Vol 1&times;</span>';
+      }
+
+      renderMorningMom(j.stocks || [], j);
+    })
+    .catch(function(err) {
+      _mmomScanning = false;
+      if (btn)    btn.classList.remove('scanning');
+      if (loadEl) loadEl.style.display = 'none';
+      document.getElementById('mmom-results-body').innerHTML =
+        '<tr><td colspan="13"><div class="empty-state">' +
+        '<i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
+        'Error: ' + err + '</div></td></tr>';
+    });
+}
+
+function renderMorningMom(stocks, meta) {
+  var tbody = document.getElementById('mmom-results-body');
+  var st       = (meta || {}).status || '';
+  var stN5     = (meta || {}).n500_status  || '';
+  var stMc     = (meta || {}).mc250_status || '';
+  var scanning = (stN5 === 'scanning' || stN5 === 'initializing' || stMc === 'scanning');
+  var dateVal  = document.getElementById('mmom-date').value;
+  var asOf     = (meta || {}).as_of_date || dateVal;
+
+  if (!stocks || !stocks.length) {
+    var isErr = st === 'error';
+    var msg = scanning
+      ? '<div class="spinner-border text-warning mb-3" style="width:2rem;height:2rem;"></div>' +
+        '<br><strong>Scanning all 750 tickers for Morning Star&hellip;</strong><br>' +
+        '<small style="color:var(--text-muted);">Checks every N500 + MC250 stock.<br>Takes 2&ndash;5 min on first run; instant from cache thereafter.</small>'
+      : isErr
+      ? '<i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
+        '<strong>Scan error.</strong>'
+      : '<i class="bi bi-sunrise fs-2 d-block mb-2" style="color:var(--text-muted);"></i>' +
+        'No Morning Star patterns found in any of the 750 tickers' +
+        (asOf ? ' for ' + asOf : ' today') + '.<br>' +
+        '<small style="color:var(--text-muted);">The Morning Star is a rare 3-candle reversal &mdash; try a different date or check back after the next session.</small>';
+    tbody.innerHTML = '<tr><td colspan="13"><div class="empty-state">' + msg + '</div></td></tr>';
+    return;
+  }
+
+  var medals = ['\uD83E\uDD47','\uD83E\uDD48','\uD83E\uDD49'];
+  tbody.innerHTML = stocks.map(function(s, i) {
+    var rank    = i + 1;
+    var rkCls   = rank <= 3 ? 'rank-' + rank : '';
+    var rankLbl = rank <= 3 ? medals[rank-1] + ' ' + rank : rank;
+
+    var from    = s.from_index || 'Nifty 500';
+    var fromCls = from === 'Nifty 500' ? 'from-n500' : 'from-mc250';
+    var fromCell= '<td class="' + fromCls + '" style="white-space:nowrap;font-size:0.70rem;font-weight:700;">' + from + '</td>';
+
+    var price    = s.price;
+    var priceStr = price != null
+      ? '<span style="font-family:monospace;font-weight:700;">&#8377;' + Number(price).toLocaleString('en-IN', {maximumFractionDigits:1}) + '</span>'
+      : '<span style="color:var(--text-muted);">--</span>';
+
+    var rsi     = s.rsi    != null ? Number(s.rsi).toFixed(1)    : '--';
+    var wrsi    = s.weekly_rsi != null ? Number(s.weekly_rsi).toFixed(1) : '--';
+    var rsiCls  = s.rsi    != null ? rsiClass(s.rsi) : '';
+    var wrsiCls = s.weekly_rsi != null ? rsiClass(s.weekly_rsi) : '';
+    var rsiCell =
+      '<span class="' + rsiCls + '">' + rsi + '</span>' +
+      '<div class="sector-sub ' + wrsiCls + '">W:' + wrsi + '</div>';
+
+    var adxCls  = s.adx >= 40 ? 'rsi-high' : s.adx >= 25 ? 'rsi-ok' : '';
+    var adxCell =
+      '<span class="' + adxCls + '" style="font-family:monospace;">' + (s.adx||'--') + '</span>' +
+      (s.pdi != null ? '<div class="sector-sub">+DI:' + s.pdi + ' &minus;DI:' + (s.ndi||'?') + '</div>' : '');
+
+    var r20  = s.return_20d != null ? s.return_20d : (s.return_1m != null ? s.return_1m : null);
+    var r20c = r20 != null ? (r20 >= 0 ? 'vs-sector-pos' : 'vs-sector-neg') : '';
+    var r20Cell = r20 != null
+      ? '<span class="' + r20c + '">' + (r20 >= 0 ? '+' : '') + Number(r20).toFixed(2) + '%</span>'
+      : '--';
+
+    var rs      = s.rs_outperf_pct;
+    var rsRatio = s.rs_ratio;
+    var rsCls   = rs != null ? (rs >= 5 ? 'vs-sector-pos' : rs >= 0 ? '' : 'vs-sector-neg') : '';
+    var rsCell  = rs != null
+      ? '<span class="' + rsCls + '">' + (rs >= 0 ? '+' : '') + Number(rs).toFixed(2) + '%</span>' +
+        (rsRatio != null ? '<div class="sector-sub">RS:' + Number(rsRatio).toFixed(4) + '</div>' : '')
+      : '--';
+
+    var vz    = s.vol_zscore;
+    var rvPct = s.rel_vol_pct;
+    var volCell =
+      '<span class="vol-badge">Z:' + (vz != null ? Number(vz).toFixed(2) : '--') + '</span>' +
+      (rvPct != null ? '<div class="sector-sub">RVPct:' + Number(rvPct).toFixed(0) + '%</div>' : '');
+
+    var pve20   = s.price_vs_ema20;
+    var e2050   = s.ema20_vs_50;
+    var emaCell =
+      (pve20 != null ? '<span style="font-size:0.80rem;color:' + (pve20>=0?'var(--green)':'var(--red)') + ';">' +
+        (pve20 >= 0 ? '+' : '') + Number(pve20).toFixed(2) + '% vs 20</span>' : '--') +
+      (e2050 != null ? '<div class="sector-sub">' + (e2050 >= 0 ? '+' : '') + Number(e2050).toFixed(2) + '% 20>50</div>' : '');
+
+    var secCell     = '<span class="badge sec-badge bg-' + sectorColor(s.sector) + '">' + (s.sector || '--') + '</span>';
+
+    // Morning Star confirmation badge
+    var starCell = s.morning_star
+      ? '<span style="font-size:1.1rem;" title="Morning Star pattern detected">&#127774;</span>' +
+        '<div style="font-size:0.65rem;color:var(--yellow);">Confirmed</div>'
+      : '<span style="color:var(--text-muted);">&#8211;</span>';
+
+    // Star Quality Score (0-100: Penetration 30% + Vol Surge 25% + Oversold RSI 25% + Prior Decline 20%)
+    var ss    = s.mom_score != null ? Number(s.mom_score) : 0;
+    var ssPct = Math.min(100, ss).toFixed(0);
+    var ssCol = ss >= 65 ? 'var(--green)' : ss >= 45 ? 'var(--blue)' : ss >= 25 ? 'var(--yellow)' : 'var(--text-muted)';
+    var ssLbl = ss >= 65 ? ' ★★★' : ss >= 45 ? ' ★★' : ss >= 25 ? ' ★' : '';
+    var msCell =
+      '<span style="font-family:monospace;font-weight:700;font-size:1rem;color:' + ssCol + ';">' + ss.toFixed(1) + ssLbl + '</span>' +
+      '<div class="fund-bar-wrap"><div class="fund-bar-fill" style="width:' + ssPct + '%;background:' + ssCol + ';"></div></div>';
+
+    var ticker = s.display_ticker || (s.ticker || '').replace('.NS','');
+
+    // Candle-date indicator
+    var filterDateMm = document.getElementById('mmom-date').value;
+    var candleDateMm = s.candle_date || null;
+    var candleDateCellMm = '';
+    if (candleDateMm) {
+      var cdLabelMm = candleDateMm;
+      var cdStyleMm = 'color:var(--text-muted);font-size:0.68rem;';
+      if (filterDateMm && filterDateMm !== candleDateMm) {
+        var fdMm   = new Date(filterDateMm);
+        var cdMm   = new Date(candleDateMm);
+        var gapDaysMm = Math.round((fdMm - cdMm) / 86400000);
+        if (gapDaysMm > 3) {
+          cdStyleMm = 'color:var(--red);font-size:0.68rem;font-weight:700;';
+          cdLabelMm = '⚠ ' + candleDateMm + ' (−' + gapDaysMm + 'd)';
+        } else if (gapDaysMm > 0) {
+          cdStyleMm = 'color:var(--yellow);font-size:0.68rem;';
+          cdLabelMm = candleDateMm + ' (−' + gapDaysMm + 'd)';
+        }
+      }
+      candleDateCellMm = '<div style="' + cdStyleMm + '">' + cdLabelMm + '</div>';
+    }
+
+    return '<tr>' +
+      '<td><div class="rank-badge ' + rkCls + ' mx-auto">' + rankLbl + '</div></td>' +
+      fromCell +
+      '<td>' +
+        '<div class="ticker-sym">' + ticker + '</div>' +
+        '<div class="company-name">' + (s.name || '') + '</div>' +
+        (s.stop_loss != null ? '<div class="sl-sub">SL:&#8377;' + Number(s.stop_loss).toLocaleString('en-IN') + '</div>' : '') +
+        candleDateCellMm +
+      '</td>' +
+      '<td>' + priceStr + '</td>' +
+      '<td>' + rsiCell  + '</td>' +
+      '<td>' + adxCell  + '</td>' +
+      '<td>' + r20Cell  + '</td>' +
+      '<td>' + rsCell   + '</td>' +
+      '<td>' + volCell  + '</td>' +
+      '<td>' + emaCell  + '</td>' +
+      '<td>' + secCell  + '</td>' +
+      '<td style="text-align:center;">' + starCell + '</td>' +
+      '<td>' + msCell   + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+
+// ══════════════════════════ SME FUNDAMENTALS ══════════════════════════════
+var smeLoaded = false;
+
+function smeLoad(forceRefresh) {
+  var btn    = document.getElementById('sme-refresh-btn');
+  var loadEl = document.getElementById('sme-loading-msg');
+  if (btn)    btn.classList.add('scanning');
+  if (loadEl) loadEl.style.display = 'flex';
+
+  var url = '/api/sme/fundamentals' + (forceRefresh ? '?refresh=1' : '');
+  fetch(url)
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (btn)    btn.classList.remove('scanning');
+      if (loadEl) loadEl.style.display = 'none';
+      smeLoaded = true;
+
+      document.getElementById('sme-count').textContent     = j.total || 0;
+      document.getElementById('sme-result-count').textContent = (j.stocks || []).length + ' stocks';
+      document.getElementById('sme-nse-count').textContent   = (j.nse_count || '--') + ' tickers';
+      document.getElementById('sme-bse-count').textContent   = (j.bse_count || '--') + ' tickers';
+
+      var fresh = j.cache_fresh != null ? j.cache_fresh : '--';
+      var total = j.cache_total != null ? j.cache_total : '--';
+      var bgMsg = j.bg_running
+        ? ' &middot; <span style="color:var(--yellow);">⟳ updating ' + j.stale_count + ' in background…</span>'
+        : (j.stale_count > 0
+          ? ' &middot; <span style="color:var(--text-muted);">' + j.stale_count + ' stale</span>'
+          : ' &middot; <span style="color:var(--green);">✓ all fresh</span>');
+      document.getElementById('sme-source').innerHTML = 'Cache: ' + fresh + '/' + total + bgMsg;
+
+      if (j.bg_running && (j.total || 0) < 3)
+        setTimeout(function() { if (activeTab === 'sme') smeLoad(false); }, 8000);
+
+      renderSME(j.stocks || []);
+    })
+    .catch(function(err) {
+      if (btn)    btn.classList.remove('scanning');
+      if (loadEl) loadEl.style.display = 'none';
+      document.getElementById('sme-results-body').innerHTML =
+        '<tr><td colspan="14"><div class="empty-state"><i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
+        'Error: ' + err + '</div></td></tr>';
+    });
+}
+
+function renderSME(stocks) {
+  var tbody = document.getElementById('sme-results-body');
+  if (!stocks || !stocks.length) {
+    tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' +
+      '<i class="bi bi-buildings fs-2 d-block mb-2"></i>' +
+      '<strong>Fetching SME fundamental data…</strong><br>' +
+      '<small style="color:var(--text-muted);">Data is being downloaded from Screener.in in background.<br>' +
+      'This takes ~60–120 seconds on first run. <strong>Click Refresh</strong> in a moment.</small></div></td></tr>';
+    return;
+  }
+  var medals = ['🥇','🥈','🥉'];
+  tbody.innerHTML = stocks.map(function(s, i) {
+    var rank    = s.sme_rank || (i + 1);
+    var rkCls   = rank <= 3 ? 'rank-' + rank : '';
+    var rankLbl = rank <= 3 ? medals[rank-1] + ' ' + rank : rank;
+
+    // Exchange badge
+    var exch    = s.exchange || 'NSE Emerge';
+    var exchCls = exch === 'NSE Emerge' ? 'from-n500' : 'from-mc250';
+    var exchCell= '<td class="' + exchCls + '" style="white-space:nowrap;font-size:0.70rem;font-weight:700;">' + exch + '</td>';
+
+    // Price
+    var cp    = s.current_price || s.price;
+    var cpStr = cp != null
+      ? '<span style="font-family:monospace;font-weight:700;">&#8377;' + Number(cp).toLocaleString('en-IN', {maximumFractionDigits:1}) + '</span>'
+      : '<span style="color:var(--text-muted);">--</span>';
+
+    // Market cap
+    var mc    = s.market_cap_cr;
+    var mcStr = mc ? '&#8377;' + fmtNum(mc) + 'Cr' : '--';
+
+    // D/E
+    var de    = s.debt_equity;
+    var deCls = de == null ? '' :
+      de === 0    ? 'vs-sector-pos' :
+      de <= 0.5   ? 'vs-sector-pos' :
+      de <= 1.0   ? '' :
+      de <= 2.0   ? 'de-ok' : 'vs-sector-neg';
+    var deStr = de != null
+      ? '<span class="' + deCls + '">' + Number(de).toFixed(2) + 'x</span>' +
+        (s.current_ratio != null ? '<div class="sector-sub">CR:' + Number(s.current_ratio).toFixed(1) + 'x</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // ROCE
+    var roce    = s.roce;
+    var roceCls = roce == null ? '' : roce >= 30 ? 'vs-sector-pos' : roce >= 15 ? '' : 'vs-sector-neg';
+    var roceStr = roce != null
+      ? '<span class="' + roceCls + '">' + Number(roce).toFixed(1) + '%</span>' +
+        (s.roe != null ? '<div class="sector-sub">ROE:' + Number(s.roe).toFixed(1) + '%</div>' : '') +
+        (s.roe_10y != null ? '<div class="sector-sub">ROE10Y:' + Number(s.roe_10y).toFixed(0) + '%</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // Promoter
+    var ph    = s.promoter_holding;
+    var phCls = ph == null ? '' : ph >= 55 ? 'promo-high' : ph >= 35 ? 'promo-mid' : 'promo-low';
+    var phStr = ph != null
+      ? '<span class="' + phCls + '">' + Number(ph).toFixed(1) + '%</span>'
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // Institutional (FII+DII)
+    var inst = s.inst_holding;
+    var instCls = inst == null ? '' : inst >= 25 ? 'vs-sector-pos' : inst >= 10 ? '' : '';
+    var instStr = inst != null
+      ? '<span class="' + instCls + '">' + Number(inst).toFixed(1) + '%</span>' +
+        (s.fii_holding != null ? '<div class="sector-sub">FII:' + Number(s.fii_holding).toFixed(1) + '%</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // PEG + PE sub-line
+    var peg = s.peg_ratio;
+    var pegCls = peg == null ? '' :
+      peg <= 0.5 ? 'vs-sector-pos' :
+      peg <= 1.0 ? 'vs-sector-pos' :
+      peg <= 1.5 ? '' :
+      peg <= 2.5 ? 'de-ok' : 'vs-sector-neg';
+    var pegStr = peg != null
+      ? '<span class="' + pegCls + '">' + Number(peg).toFixed(2) + '</span>' +
+        (s.pe_ratio != null ? '<div class="sector-sub">PE:' + Number(s.pe_ratio).toFixed(1) + '</div>' : '') +
+        (s.earnings_yield != null ? '<div class="sector-sub">EY:' + Number(s.earnings_yield).toFixed(1) + '%</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // CFO Yield
+    var cfoY = s.cfo_yield;
+    var cfoCls = cfoY == null ? '' :
+      cfoY >= 6   ? 'vs-sector-pos' :
+      cfoY >= 2   ? '' :
+      cfoY >= 0   ? 'de-ok' : 'vs-sector-neg';
+    var cfoStr = cfoY != null
+      ? '<span class="' + cfoCls + '">' + (cfoY >= 0 ? '+' : '') + Number(cfoY).toFixed(1) + '%</span>' +
+        (s.cash_from_operations != null ? '<div class="sector-sub">CFO:&#8377;' + fmtNum(s.cash_from_operations) + 'Cr</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // Sales growth 3Y + 10Y sub-line
+    var sg   = s.sales_growth_pct;
+    var sgCls = sg == null ? '' : sg >= 15 ? 'vs-sector-pos' : sg >= 0 ? '' : 'vs-sector-neg';
+    var sgStr = sg != null
+      ? '<span class="' + sgCls + '">' + (sg >= 0 ? '+' : '') + Number(sg).toFixed(0) + '%</span>' +
+        (s.sales_growth_10y != null ? '<div class="sector-sub">10Y:' + (s.sales_growth_10y >= 0 ? '+' : '') + Number(s.sales_growth_10y).toFixed(0) + '%</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // Profit growth 3Y + 10Y sub-line
+    var pg   = s.profit_growth_3y;
+    var pgCls = pg == null ? '' : pg >= 15 ? 'vs-sector-pos' : pg >= 0 ? '' : 'vs-sector-neg';
+    var pgStr = pg != null
+      ? '<span class="' + pgCls + '">' + (pg >= 0 ? '+' : '') + Number(pg).toFixed(0) + '%</span>' +
+        (s.profit_growth_10y != null ? '<div class="sector-sub">10Y:' + (s.profit_growth_10y >= 0 ? '+' : '') + Number(s.profit_growth_10y).toFixed(0) + '%</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // Fund score bar + grade
+    var fs     = s.fund_score || 0;
+    var barPct = Math.min(100, fs).toFixed(0);
+    var scoreCell =
+      '<span style="font-family:monospace;font-weight:700;font-size:1rem;color:var(--blue);">' + fs.toFixed(1) + '</span>' +
+      _fundGrade(fs) +
+      '<div class="fund-bar-wrap"><div class="fund-bar-fill" style="width:' + barPct + '%;"></div></div>';
+
+    return '<tr>' +
+      '<td><div class="rank-badge ' + rkCls + ' mx-auto">' + rankLbl + '</div></td>' +
+      exchCell +
+      '<td>' +
+        '<div class="ticker-sym">' + (s.display_ticker || s.ticker || '--') + '</div>' +
+        '<div class="sector-sub">' + (s.sector || '--') + '</div>' +
+        (s.dividend_yield ? '<div class="sector-sub" style="color:var(--green)">Div:' + Number(s.dividend_yield).toFixed(2) + '%</div>' : '') +
+      '</td>' +
+      '<td style="font-size:0.82rem; white-space:nowrap;">' + cpStr + '</td>' +
+      '<td style="font-size:0.78rem;">' + mcStr + '</td>' +
+      '<td>' + deStr + '</td>' +
+      '<td>' + roceStr + '</td>' +
+      '<td>' + phStr + '</td>' +
+      '<td>' + instStr + '</td>' +
+      '<td>' + pegStr + '</td>' +
+      '<td>' + cfoStr + '</td>' +
+      '<td>' + sgStr + '</td>' +
+      '<td>' + pgStr + '</td>' +
+      '<td>' + scoreCell + '</td>' +
+      '</tr>';
+  }).join('');
 }
 
 // ══════════════════════════ STOCK SEARCH ═══════════════════════════════════
@@ -1396,21 +2363,49 @@ function _showSectorsSpinner(msg) {
   document.getElementById('sec-top5-grid').innerHTML =
     '<div class="empty-state" style="grid-column:1/-1;padding:64px 20px;">' +
     '<div class="spinner-border text-warning mb-3" style="width:2.5rem;height:2.5rem;" role="status"></div><br>' +
-    '<strong style="color:#e6edf3;">' + msg + '</strong><br>' +
-    '<small style="color:var(--text-muted);">Downloading ~44 NSE &amp; BSE sector index tickers from Yahoo Finance&hellip;</small>' +
+    '<strong style="color:var(--text-primary);">' + msg + '</strong><br>' +
+    '<small style="color:var(--text-muted);">Downloading NSE sector index data from Yahoo Finance&hellip;</small>' +
     '</div>';
   document.getElementById('sec-all-body').innerHTML =
     '<tr><td colspan="10"><div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2"></i>Please wait…</div></td></tr>';
 }
 
 // forceRefresh=true bypasses the 30-min server-side cache
+function secClearDate() {
+  document.getElementById('sec-date').value = '';
+  document.getElementById('sec-hist-badge').textContent = '';
+  document.getElementById('sec-hist-badge').classList.remove('show');
+  document.getElementById('sec-live-btn').classList.remove('show');
+  sectorsLoad(true);
+}
+
 function sectorsLoad(forceRefresh) {
   if (_secPollTimer) { clearTimeout(_secPollTimer); _secPollTimer = null; }
   var btn = document.getElementById('sec-refresh-btn');
   if (btn) btn.classList.add('scanning');
   _showSectorsSpinner('Loading NSE sector index momentum data…');
 
-  var url = '/api/sector-momentum' + (forceRefresh ? '?refresh=1' : '');
+  var dateVal = document.getElementById('sec-date').value;
+
+  // Show/hide historical badge
+  var badge = document.getElementById('sec-hist-badge');
+  var lbtn  = document.getElementById('sec-live-btn');
+  if (dateVal) {
+    badge.textContent = '\uD83D\uDCC5 ' + dateVal;
+    badge.classList.add('show');
+    lbtn.classList.add('show');
+  } else {
+    badge.classList.remove('show');
+    lbtn.classList.remove('show');
+  }
+
+  var url;
+  if (dateVal) {
+    url = '/api/sector-momentum?date=' + encodeURIComponent(dateVal);
+  } else {
+    url = '/api/sector-momentum' + (forceRefresh ? '?refresh=1' : '');
+  }
+
   fetch(url)
     .then(function(r) { return r.json(); })
     .then(function(j) {
@@ -1438,6 +2433,18 @@ function sectorsLoad(forceRefresh) {
 // ── Heat map tile background colour ─────────────────────────────────────────
 function _tileColor(ret) {
   var v = Math.max(-12, Math.min(12, ret || 0));
+  var isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  if (isLight) {
+    // Pastel colors for light mode
+    if (v > 0) {
+      var p = v / 12;
+      return 'rgb(' + Math.round(220-p*60) + ',' + Math.round(248-p*20) + ',' + Math.round(220-p*60) + ')';
+    } else if (v < 0) {
+      var n = (-v) / 12;
+      return 'rgb(' + Math.round(255-n*20) + ',' + Math.round(228-n*80) + ',' + Math.round(228-n*80) + ')';
+    }
+    return '#f0f3f6';
+  }
   if (v > 0) {
     var pos = v / 12;
     return 'rgb(' + Math.round(13+pos*8) + ',' + Math.round(17+pos*75) + ',' + Math.round(23-pos*5) + ')';
@@ -1454,7 +2461,7 @@ function renderSectors(j) {
   // ── Stat bar ────────────────────────────────────────────────────────────────
   document.getElementById('sec-count').textContent = j.total_sectors || '--';
   var luEl = document.getElementById('sec-last-updated');
-  if (luEl) luEl.textContent = j.last_updated ? timeAgo(j.last_updated) : '--';
+  if (luEl) luEl.textContent = j.as_of_date ? ('As of ' + j.as_of_date) : (j.last_updated ? timeAgo(j.last_updated) : '--');
   var brEl = document.getElementById('sec-bench-ret');
   if (brEl) {
     var br = j.bench_ret20d;
@@ -1477,73 +2484,273 @@ function renderSectors(j) {
   }
 
   // ── Heat Map ──────────────────────────────────────────────────────────────
-  var maxAbs = Math.max.apply(null, all.map(function(s){ return Math.abs(s.ret_20d||0); }));
+  var maxAbs = Math.max.apply(null, all.map(function(s){ return Math.abs(s.ret_5d||0); }));
   if (maxAbs <= 0) maxAbs = 1;
   var medals = ['🥇','🥈','🥉'];
 
   grid.innerHTML = all.map(function(s, i) {
     var rank  = i + 1;
-    var ret20 = s.ret_20d || 0;
     var ret5  = s.ret_5d  || 0;
-    var rs    = s.rs_vs_market || 0;
-    var rsi   = s.rsi || 0;
-    var bg    = _tileColor(ret20);
-    var r20c  = ret20 >= 0 ? 'var(--green)' : 'var(--red)';
-    var r5c   = ret5  >= 0 ? 'var(--green)' : 'var(--red)';
-    var rsc   = rs    >= 0 ? 'var(--green)' : 'var(--red)';
-    var barW  = Math.min(Math.abs(ret20)/maxAbs*100, 100).toFixed(0);
+    var ret3  = s.ret_3d  || 0;
+    var rs5   = s.rs_5d   != null ? s.rs_5d : (s.rs_vs_market || 0);
+    var rsi9  = s.rsi_9   != null ? s.rsi_9 : (s.rsi || 0);
+    var bg    = _tileColor(ret5);
+    var r5c   = ret5 >= 0 ? 'var(--green)' : 'var(--red)';
+    var r3c   = ret3 >= 0 ? 'var(--green)' : 'var(--red)';
+    var rsc   = rs5  >= 0 ? 'var(--green)' : 'var(--red)';
+    var barW  = Math.min(Math.abs(ret5)/maxAbs*100, 100).toFixed(0);
     var medal = rank <= 3 ? '<span class="sec-tile-medal">' + medals[rank-1] + '</span>' : '';
     var trendIco = s.above_ema ? '&#9650;' : '&#9660;';
     var trendCol = s.above_ema ? 'var(--green)' : 'var(--red)';
-    var rsArrow  = rs > 0 ? '&#9650;' : (rs < 0 ? '&#9660;' : '&#9654;');
-    var rsiCol   = rsi >= 70 ? 'var(--red)' : rsi >= 55 ? 'var(--green)' : 'var(--text-muted)';
+    var rsArrow  = rs5 > 0 ? '&#9650;' : (rs5 < 0 ? '&#9660;' : '&#9654;');
+    // RSI-9 coloring: 55-75 sweet spot = green, >75 overbought = red, <45 = muted
+    var rsiCol = rsi9 >= 75 ? 'var(--red)' : rsi9 >= 55 ? 'var(--green)' : 'var(--text-muted)';
+    var macdCol = (s.macd_hist_pct||0) >= 0 ? 'var(--green)' : 'var(--red)';
+    var macdIcon = (s.macd_hist_pct||0) >= 0 ? '&#9650;' : '&#9660;';
     return '<div class="sec-tile" style="background:' + bg + ';">' +
       medal +
       '<span class="sec-tile-rank">#' + rank + '</span>' +
-      '<div class="sec-tile-bar"><div class="sec-tile-bar-fill" style="width:' + barW + '%;background:' + r20c + ';"></div></div>' +
+      '<div class="sec-tile-bar"><div class="sec-tile-bar-fill" style="width:' + barW + '%;background:' + r5c + ';"></div></div>' +
       '<div class="sec-tile-name">' + s.sector + '</div>' +
-      '<div class="sec-tile-ret" style="color:' + r20c + ';">' + (ret20>=0?'+':'') + Number(ret20).toFixed(2) + '%</div>' +
-      '<div class="sec-tile-rs" style="color:' + rsc + ';">' + rsArrow + '&thinsp;RS&nbsp;' + (rs>=0?'+':'') + Number(rs).toFixed(2) + '%</div>' +
-      '<div class="sec-tile-meta">RSI&nbsp;<span style="color:' + rsiCol + ';font-weight:700;">' + (rsi?rsi.toFixed(0):'--') + '</span>' +
-        '&nbsp;&nbsp;5D&nbsp;<span style="color:' + r5c + ';">' + (ret5>=0?'+':'') + Number(ret5).toFixed(2) + '%</span></div>' +
+      '<div class="sec-tile-ret" style="color:' + r5c + ';">' + (ret5>=0?'+':'') + Number(ret5).toFixed(2) + '%&thinsp;<span style="font-size:0.65rem;opacity:0.8;">5D</span></div>' +
+      '<div class="sec-tile-rs" style="color:' + rsc + ';">' + rsArrow + '&thinsp;RS&thinsp;' + (rs5>=0?'+':'') + Number(rs5).toFixed(2) + '%</div>' +
+      '<div class="sec-tile-meta">RSI9&nbsp;<span style="color:' + rsiCol + ';font-weight:700;">' + (rsi9?rsi9.toFixed(0):'--') + '</span>' +
+        '&nbsp;&nbsp;3D&nbsp;<span style="color:' + r3c + ';">' + (ret3>=0?'+':'') + Number(ret3).toFixed(2) + '%</span></div>' +
       '<div class="sec-tile-meta" style="margin-top:3px;"><span style="color:' + trendCol + ';">' + trendIco + '</span>&thinsp;' +
-        '<span style="font-size:0.63rem;color:var(--text-muted);">EMA20' + (s.above_ema?'>':'<') + 'EMA50</span></div>' +
+        '<span style="font-size:0.63rem;color:var(--text-muted);">EMA9' + (s.above_ema?'>':'<') + 'EMA20</span>' +
+        '&nbsp;&nbsp;<span style="color:' + macdCol + ';font-size:0.63rem;">' + macdIcon + 'MACD</span></div>' +
       '</div>';
   }).join('');
 
-  // ── Detailed Rankings Table ───────────────────────────────────────────────
   var tbody = document.getElementById('sec-all-body');
   tbody.innerHTML = all.map(function(s, i) {
     var rank   = i + 1;
     var rkCls  = rank <= 3 ? 'rank-' + rank : '';
+    var r3c    = (s.ret_3d  ||0)>=0 ? 'vs-sector-pos' : 'vs-sector-neg';
     var r5c    = (s.ret_5d  ||0)>=0 ? 'vs-sector-pos' : 'vs-sector-neg';
-    var r20c   = (s.ret_20d ||0)>=0 ? 'vs-sector-pos' : 'vs-sector-neg';
-    var r50c   = (s.ret_50d ||0)>=0 ? 'vs-sector-pos' : 'vs-sector-neg';
-    var rsc    = (s.rs_vs_market||0)>=0 ? 'vs-sector-pos' : 'vs-sector-neg';
-    var rsiCls = (s.rsi||0) >= 65 ? 'rsi-high' : 'rsi-ok';
+    var rs5c   = (s.rs_5d   ||0)>=0 ? 'vs-sector-pos' : 'vs-sector-neg';
+    var rsi9   = s.rsi_9 != null ? s.rsi_9 : (s.rsi || 0);
+    var rsiCls = rsi9 >= 75 ? 'rsi-overbought' : rsi9 >= 55 ? 'rsi-high' : 'rsi-ok';
     var emaCell= s.pct_above_ema != null
       ? '<span style="font-size:0.78rem;color:' + (s.pct_above_ema>=0?'var(--green)':'var(--red)') + ';">' + (s.pct_above_ema>=0?'+':'') + Number(s.pct_above_ema).toFixed(2) + '%</span>'
       : '--';
     var trend  = s.above_ema
-      ? '<span style="color:var(--green);">&#9650; Above</span>'
-      : '<span style="color:var(--red);">&#9660; Below</span>';
+      ? '<span style="color:var(--green);">&#9650; EMA9&gt;20</span>'
+      : '<span style="color:var(--red);">&#9660; EMA9&lt;20</span>';
+    var macdCol = (s.macd_hist_pct||0) >= 0 ? 'var(--green)' : 'var(--red)';
+    var macdStr = s.macd_hist_pct != null
+      ? '<span style="color:' + macdCol + ';">' + (s.macd_hist_pct>=0?'+':'') + Number(s.macd_hist_pct).toFixed(3) + '%</span>'
+      : '--';
     return '<tr>' +
       '<td><div class="rank-badge ' + rkCls + ' mx-auto">' + rank + '</div></td>' +
       '<td><strong>' + s.sector + '</strong><div style="font-size:0.63rem;color:var(--text-muted);">' + (s.ticker||'') + '</div></td>' +
+      '<td class="' + r3c  + '">' + fmtPct(s.ret_3d)  + '</td>' +
       '<td class="' + r5c  + '">' + fmtPct(s.ret_5d)  + '</td>' +
-      '<td class="' + r20c + '">' + fmtPct(s.ret_20d) + '</td>' +
-      '<td class="' + r50c + '">' + fmtPct(s.ret_50d) + '</td>' +
-      '<td class="' + rsiCls + '">' + (s.rsi!=null?Number(s.rsi).toFixed(1):'--') + '</td>' +
+      '<td class="' + rsiCls + '">' + (rsi9?Number(rsi9).toFixed(1):'--') + '</td>' +
       '<td>' + emaCell + '</td>' +
       '<td>' + trend + '</td>' +
-      '<td class="' + rsc + '">' + fmtPct(s.rs_vs_market) + '</td>' +
+      '<td class="' + rs5c + '">' + fmtPct(s.rs_5d != null ? s.rs_5d : s.rs_vs_market) + '</td>' +
+      '<td>' + macdStr + '</td>' +
       '<td class="score-num">' + (s.score!=null?Number(s.score).toFixed(3):'--') + '</td>' +
       '</tr>';
   }).join('');
 }
 
-// ── Startup ── start Nifty 500 stream right away
-n5Connect();
+// ══════════════════════════ FUNDAMENTALS TAB ══════════════════════════════
+var _fundLoaded = false;
+
+function fundLoad(force) {
+  var btn = document.getElementById('fund-refresh-btn');
+  if (btn) btn.classList.add('scanning');
+  var loadEl = document.getElementById('fund-loading-msg');
+  if (loadEl) { loadEl.style.display = 'block'; }
+  document.getElementById('fund-results-body').innerHTML =
+    '<tr><td colspan="10"><div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2"></i>Loading…</div></td></tr>';
+
+  var url = '/api/fundamentals' + (force ? '?refresh=1' : '');
+  fetch(url)
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (btn) btn.classList.remove('scanning');
+      if (loadEl) loadEl.style.display = 'none';
+      _fundLoaded = true;
+      document.getElementById('fund-count').textContent = j.total || 0;
+      document.getElementById('fund-result-count').textContent = (j.stocks || []).length + ' stocks (of ' + (j.total_scored || 0) + ' scored)';
+
+      // Show cache coverage + background status
+      var fresh  = j.cache_fresh != null ? j.cache_fresh : '--';
+      var total  = j.cache_total != null ? j.cache_total : '--';
+      var bgMsg  = j.bg_running
+        ? ' · <span style="color:var(--yellow);">⟳ updating ' + j.stale_count + ' in background…</span>'
+        : (j.stale_count > 0
+          ? ' · <span style="color:var(--text-muted);">' + j.stale_count + ' stale, refreshing…</span>'
+          : ' · <span style="color:var(--green);">✓ all fresh</span>');
+      document.getElementById('fund-source').innerHTML =
+        'Cache: ' + fresh + '/' + total + ' tickers' + bgMsg;
+
+      // Auto-retry after 6s if background is running and we have few results
+      if (j.bg_running && (j.total || 0) < 5) {
+        setTimeout(function() { if (activeTab === 'fund') fundLoad(false); }, 6000);
+      }
+      renderFundamentals(j.stocks || []);
+    })
+    .catch(function(err) {
+      if (btn) btn.classList.remove('scanning');
+      if (loadEl) loadEl.style.display = 'none';
+      document.getElementById('fund-results-body').innerHTML =
+        '<tr><td colspan="13"><div class="empty-state"><i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
+        'Error loading fundamentals: ' + err + '</div></td></tr>';
+    });
+}
+
+function _fundGrade(score) {
+  if (score >= 65) return '<span class="fund-grade fund-grade-a">A</span>';
+  if (score >= 45) return '<span class="fund-grade fund-grade-b">B</span>';
+  if (score >= 25) return '<span class="fund-grade fund-grade-c">C</span>';
+  return '<span class="fund-grade fund-grade-d">D</span>';
+}
+
+function renderFundamentals(stocks) {
+  var tbody = document.getElementById('fund-results-body');
+  if (!stocks || !stocks.length) {
+    tbody.innerHTML = '<tr><td colspan="13"><div class="empty-state">' +
+      '<i class="bi bi-gem fs-2 d-block mb-2"></i>' +
+      '<strong>Fetching fundamental data for 750 tickers…</strong><br>' +
+      '<small style="color:var(--text-muted);">Data is being downloaded from NSE &amp; Screener.in in background.<br>' +
+      'This takes ~60–120 seconds on first run. <strong>Click Refresh</strong> in a moment.</small></div></td></tr>';
+    return;
+  }
+  var medals = ['🥇','🥈','🥉'];
+  tbody.innerHTML = stocks.map(function(s, i) {
+    var rank   = s.fund_rank || (i + 1);
+    var rkCls  = rank <= 3 ? 'rank-' + rank : '';
+    var rankLbl = rank <= 3 ? medals[rank-1] + ' ' + rank : rank;
+
+    // Price (current_price from screener, or price from scan)
+    var cp  = s.current_price || s.price;
+    var cpStr = cp != null
+      ? '<span style="font-family:monospace;font-weight:700;">&#8377;' + Number(cp).toLocaleString('en-IN', {maximumFractionDigits:1}) + '</span>'
+      : '<span style="color:var(--text-muted);">--</span>';
+
+    // Market cap
+    var mc    = s.market_cap_cr;
+    var mcStr = mc ? '&#8377;' + fmtNum(mc) + 'Cr' : '--';
+
+    // D/E Ratio
+    var de    = s.debt_equity;
+    var deCls = de == null ? '' :
+      de === 0    ? 'vs-sector-pos' :
+      de <= 0.5   ? 'vs-sector-pos' :
+      de <= 1.0   ? '' :
+      de <= 2.0   ? 'de-ok' : 'vs-sector-neg';
+    var deStr = de != null
+      ? '<span class="' + deCls + '">' + Number(de).toFixed(2) + 'x</span>' +
+        (s.current_ratio != null ? '<div class="sector-sub">CR:' + Number(s.current_ratio).toFixed(1) + 'x</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // ROCE + ROE sub-line
+    var roce  = s.roce;
+    var roceCls = roce == null ? '' : roce >= 30 ? 'vs-sector-pos' : roce >= 15 ? '' : 'vs-sector-neg';
+    var roceStr = roce != null
+      ? '<span class="' + roceCls + '">' + Number(roce).toFixed(1) + '%</span>' +
+        (s.roe != null ? '<div class="sector-sub">ROE:' + Number(s.roe).toFixed(1) + '%</div>' : '') +
+        (s.roe_10y != null ? '<div class="sector-sub">ROE10Y:' + Number(s.roe_10y).toFixed(0) + '%</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // Promoter
+    var ph  = s.promoter_holding;
+    var phCls = ph == null ? '' : ph >= 55 ? 'promo-high' : ph >= 35 ? 'promo-mid' : 'promo-low';
+    var phStr = ph != null
+      ? '<span class="' + phCls + '">' + Number(ph).toFixed(1) + '%</span>'
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // Institutional (FII+DII)
+    var inst = s.inst_holding;
+    var instCls = inst == null ? '' : inst >= 25 ? 'vs-sector-pos' : inst >= 10 ? '' : '';
+    var instStr = inst != null
+      ? '<span class="' + instCls + '">' + Number(inst).toFixed(1) + '%</span>' +
+        (s.fii_holding != null ? '<div class="sector-sub">FII:' + Number(s.fii_holding).toFixed(1) + '%</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // PEG + PE sub-line
+    var peg = s.peg_ratio;
+    var pegCls = peg == null ? '' :
+      peg <= 0.5 ? 'vs-sector-pos' :
+      peg <= 1.0 ? 'vs-sector-pos' :
+      peg <= 1.5 ? '' :
+      peg <= 2.5 ? 'de-ok' : 'vs-sector-neg';
+    var pegStr = peg != null
+      ? '<span class="' + pegCls + '">' + Number(peg).toFixed(2) + '</span>' +
+        (s.pe_ratio != null ? '<div class="sector-sub">PE:' + Number(s.pe_ratio).toFixed(1) + '</div>' : '') +
+        (s.earnings_yield != null ? '<div class="sector-sub">EY:' + Number(s.earnings_yield).toFixed(1) + '%</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // CFO Yield
+    var cfoY = s.cfo_yield;
+    var cfoCls = cfoY == null ? '' :
+      cfoY >= 6   ? 'vs-sector-pos' :
+      cfoY >= 2   ? '' :
+      cfoY >= 0   ? 'de-ok' : 'vs-sector-neg';
+    var cfoStr = cfoY != null
+      ? '<span class="' + cfoCls + '">' + (cfoY >= 0 ? '+' : '') + Number(cfoY).toFixed(1) + '%</span>' +
+        (s.cash_from_operations != null ? '<div class="sector-sub">CFO:&#8377;' + fmtNum(s.cash_from_operations) + 'Cr</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // Sales growth 3Y + 10Y sub-line
+    var sg   = s.sales_growth_pct;
+    var sgCls = sg == null ? '' : sg >= 15 ? 'vs-sector-pos' : sg >= 0 ? '' : 'vs-sector-neg';
+    var sgStr = sg != null
+      ? '<span class="' + sgCls + '">' + (sg >= 0 ? '+' : '') + Number(sg).toFixed(0) + '%</span>' +
+        (s.sales_growth_10y != null ? '<div class="sector-sub">10Y:' + (s.sales_growth_10y >= 0 ? '+' : '') + Number(s.sales_growth_10y).toFixed(0) + '%</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // Profit growth 3Y + 10Y sub-line
+    var pg   = s.profit_growth_3y;
+    var pgCls = pg == null ? '' : pg >= 15 ? 'vs-sector-pos' : pg >= 0 ? '' : 'vs-sector-neg';
+    var pgStr = pg != null
+      ? '<span class="' + pgCls + '">' + (pg >= 0 ? '+' : '') + Number(pg).toFixed(0) + '%</span>' +
+        (s.profit_growth_10y != null ? '<div class="sector-sub">10Y:' + (s.profit_growth_10y >= 0 ? '+' : '') + Number(s.profit_growth_10y).toFixed(0) + '%</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // Fund score bar + grade
+    var fs     = s.fund_score || 0;
+    var barPct = Math.min(100, fs).toFixed(0);
+    var scoreCell =
+      '<span style="font-family:monospace;font-weight:700;font-size:1rem;color:var(--blue);">' + fs.toFixed(1) + '</span>' +
+      _fundGrade(fs) +
+      '<div class="fund-bar-wrap"><div class="fund-bar-fill" style="width:' + barPct + '%;"></div></div>';
+
+    return '<tr>' +
+      '<td><div class="rank-badge ' + rkCls + ' mx-auto">' + rankLbl + '</div></td>' +
+      '<td>' +
+        '<div class="ticker-sym">' + (s.display_ticker || s.ticker || '--') + '</div>' +
+        '<div class="sector-sub">' + (s.sector || '--') + '</div>' +
+        (s.dividend_yield ? '<div class="sector-sub" style="color:var(--green)">Div:' + Number(s.dividend_yield).toFixed(2) + '%</div>' : '') +
+      '</td>' +
+      '<td style="font-size:0.82rem; white-space:nowrap;">' + cpStr + '</td>' +
+      '<td style="font-size:0.78rem;">' + mcStr + '</td>' +
+      '<td>' + deStr + '</td>' +
+      '<td>' + roceStr + '</td>' +
+      '<td>' + phStr + '</td>' +
+      '<td>' + instStr + '</td>' +
+      '<td>' + pegStr + '</td>' +
+      '<td>' + cfoStr + '</td>' +
+      '<td>' + sgStr + '</td>' +
+      '<td>' + pgStr + '</td>' +
+      '<td>' + scoreCell + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+function fmtNum(v) {
+  if (v == null) return '--';
+  if (v >= 100000) return (v/100000).toFixed(1) + 'L';
+  if (v >= 1000)   return (v/1000).toFixed(1)   + 'K';
+  return Number(v).toLocaleString('en-IN');
+}
+
+// ── Startup ── connect both N500 + MC250 streams right away
+swingConnect();
 </script>
 </body>
 </html>

@@ -1,5 +1,5 @@
 """
-main.py — FastAPI application for Nifty 500 Stock Scanner
+main.py  -  FastAPI application for Nifty 500 Stock Scanner
 """
 
 # SSL bypass for corporate proxy (requests.Session.verify=False is set in scanner.py;
@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, date as DateType
@@ -45,11 +46,15 @@ from config import (
     REQUIRE_ADX_THRESHOLD, REQUIRE_FUNDAMENTALS,
     MICROCAP_BENCHMARK_TICKER, MICROCAP_BENCHMARK_ETF_FALLBACKS,
 )
-from scanner import StockScanner
+from scanner import (
+    StockScanner,
+    MOM_RSI_MIN, MOM_WRSI_MIN, MOM_ADX_MIN,
+    MOM_VOLZ_MIN, MOM_RS_MIN, MOM_RET20_MIN, MOM_RET5_MIN, MOM_TV_MIN_CR,
+)
 from tickers import NIFTY500_TICKERS, NIFTY_MICROCAP250_TICKERS
 import cache as _ohlcv_cache
 
-# ── Logging ──────────────────────────────────────────────────────────────────
+# -- Logging ------------------------------------------------------------------
 # Force UTF-8 on Windows console so log messages render correctly
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 if hasattr(sys.stdout, "reconfigure"):
@@ -94,9 +99,10 @@ scanner_mc = StockScanner(
 )
 scheduler = AsyncIOScheduler()
 
-# ── Shared state ─────────────────────────────────────────────────────────────
+# -- Shared state -------------------------------------------------------------
 scan_state: dict = {
     "data": [],
+    "momentum_data": [],
     "last_updated": None,
     "status": "initializing",
     "scan_count": 0,
@@ -111,8 +117,9 @@ scan_state: dict = {
 
 mc_scan_state: dict = {
     "data": [],
+    "momentum_data": [],
     "last_updated": None,
-    "status": "idle",
+    "status": "initializing",
     "scan_count": 0,
     "filters_passed": 0,
     "next_scan_ts": None,
@@ -126,11 +133,81 @@ mc_scan_state: dict = {
 mc_scan_ever_triggered: bool = False
 n500_tab_active: bool = True
 _scan_lock: asyncio.Lock = asyncio.Lock()
+_mom_scan_lock: asyncio.Lock = asyncio.Lock()   # independent lock for momentum-only scans
 
+# Per-tab cancellation events  -  set when user switches away from a tab.
+# BG workers check these after every ticker and exit early if set.
+_fund_cancel: threading.Event = threading.Event()
+_sme_cancel:  threading.Event = threading.Event()
+_active_tab:  str             = "swing"   # tracks the currently visible tab
 
-# ── Generic scan body ─────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Dedicated Stock Momentum scan state  (independent of Swing Trade)
+# ---------------------------------------------------------------------------
+# Populated by run_n500_momentum_scan() / run_mc250_momentum_scan() which
+# call scanner.scan(momentum_only=True) — applies ONLY the 6 momentum
+# criteria, NO fundamentals, NO swing-trade entry conditions.
+mom_scan_state: dict = {
+    "data":           [],
+    "last_updated":   None,
+    "status":         "initializing",
+    "scan_count":     0,
+    "filters_passed": 0,
+    "next_scan_ts":   None,
+    "error":          None,
+    "total_tickers":  len(scanner.tickers),
+    "scan_stage":     "",
+    "regime_ok":      True,
+    "regime_summary": "",
+}
+
+mc_mom_scan_state: dict = {
+    "data":           [],
+    "last_updated":   None,
+    "status":         "initializing",
+    "scan_count":     0,
+    "filters_passed": 0,
+    "next_scan_ts":   None,
+    "error":          None,
+    "total_tickers":  len(scanner_mc.tickers),
+    "scan_stage":     "",
+    "regime_ok":      True,
+    "regime_summary": "",
+}
+
+# ---------------------------------------------------------------------------
+# Dedicated Morning Star scan state (all 750 tickers, pattern only)
+# ---------------------------------------------------------------------------
+# Populated by run_n500_ms_scan() / run_mc250_ms_scan() which call
+# scanner.scan_morning_star() — no momentum/swing criteria, just checks
+# the 3-candle Morning Star pattern on every ticker using cache-first OHLCV.
+_ms_scan_lock: asyncio.Lock = asyncio.Lock()
+
+ms_scan_state: dict = {
+    "data":           [],
+    "last_updated":   None,
+    "status":         "initializing",
+    "scan_count":     0,
+    "filters_passed": 0,
+    "next_scan_ts":   None,
+    "error":          None,
+    "total_tickers":  len(scanner.tickers),
+    "scan_stage":     "",
+}
+
+mc_ms_scan_state: dict = {
+    "data":           [],
+    "last_updated":   None,
+    "status":         "initializing",
+    "scan_count":     0,
+    "filters_passed": 0,
+    "next_scan_ts":   None,
+    "error":          None,
+    "total_tickers":  len(scanner_mc.tickers),
+    "scan_stage":     "",
+}
 async def _do_run_generic_scan(sc: StockScanner, state: dict, label: str) -> None:
-    """Inner scan body — must be called while _scan_lock is held.
+    """Inner scan body  -  must be called while _scan_lock is held.
     Works for both Nifty500 and Microcap250 scanners."""
     def _progress(stage: str):
         state["scan_stage"] = stage
@@ -142,6 +219,7 @@ async def _do_run_generic_scan(sc: StockScanner, state: dict, label: str) -> Non
         now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
         state.update({
             "data":           results,
+            "momentum_data":  sc.last_momentum_results,   # momentum-only filtered list
             "last_updated":   now_ist,
             "status":         "complete",
             "scan_count":     state["scan_count"] + 1,
@@ -162,7 +240,7 @@ async def _do_run_generic_scan(sc: StockScanner, state: dict, label: str) -> Non
         state["next_scan_ts"] = (time.time() + SCAN_INTERVAL_MINUTES * 60) if AUTO_RESCAN else None
 
 
-# ── Scan tasks ───────────────────────────────────────────────────────────────
+# -- Scan tasks ---------------------------------------------------------------
 async def run_scan() -> None:
     global scan_state
     if _scan_lock.locked():
@@ -203,37 +281,235 @@ async def _maybe_run_mc_scan() -> None:
         await run_mc_scan()
 
 
-# ── Lifespan ─────────────────────────────────────────────────────────────────
+# -- Dedicated momentum-only scan tasks ----------------------------------------
+
+
+async def _do_run_momentum_scan(sc: StockScanner, state: dict, label: str) -> None:
+    """Run scanner.scan(momentum_only=True) and store results in *state*.
+    Must be called while _mom_scan_lock is held."""
+    def _progress(stage: str):
+        state["scan_stage"] = stage
+
+    try:
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            None, lambda: sc.scan(progress_cb=_progress, momentum_only=True)
+        )
+        now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
+        state.update({
+            "data":           results,
+            "last_updated":   now_ist,
+            "status":         "complete",
+            "scan_count":     state["scan_count"] + 1,
+            "filters_passed": len(results),
+            "next_scan_ts":   (time.time() + SCAN_INTERVAL_MINUTES * 60) if AUTO_RESCAN else None,
+            "scan_stage":     f"{len(results)} momentum stocks",
+            "error":          None,
+            "regime_ok":      sc.last_regime_ok,
+            "regime_summary": sc.last_regime_summary,
+        })
+        logger.info("=== %s Momentum Scan #%d complete -- %d qualifying stocks ===",
+                    label, state["scan_count"], len(results))
+
+    except Exception as exc:
+        logger.error("%s momentum scan failed: %s", label, exc, exc_info=True)
+        state["status"] = "error"
+        state["error"]  = str(exc)
+        state["next_scan_ts"] = (time.time() + SCAN_INTERVAL_MINUTES * 60) if AUTO_RESCAN else None
+
+
+async def run_n500_momentum_scan() -> None:
+    """Run a momentum-only scan for the Nifty 500 universe."""
+    # Set status to "scanning" IMMEDIATELY — before waiting for the lock.
+    # If we only set it inside `async with _mom_scan_lock:`, the status stays
+    # "initializing" while this coroutine is queued, and polling callers
+    # (get_stock_momentum, get_morning_momentum) keep creating duplicate tasks.
+    mom_scan_state["status"] = "scanning"
+    if _mom_scan_lock.locked():
+        logger.info("N500 momentum scan queued -- waiting for MC250 momentum scan...")
+        mom_scan_state["scan_stage"] = "Queued (waiting for MC250 momentum scan)..."
+    async with _mom_scan_lock:
+        mom_scan_state["scan_stage"] = "Loading OHLCV data..."
+        mom_scan_state["next_scan_ts"] = None
+        logger.info("=== Nifty500 Momentum scan starting ===")
+        await _do_run_momentum_scan(scanner, mom_scan_state, "Nifty500-Momentum")
+
+
+async def run_mc250_momentum_scan() -> None:
+    """Run a momentum-only scan for the Microcap 250 universe."""
+    # Set status to "scanning" IMMEDIATELY — before waiting for the lock.
+    # Same reasoning as run_n500_momentum_scan(): prevents duplicate task
+    # creation from polling endpoints that check mc250_status == "initializing".
+    mc_mom_scan_state["status"] = "scanning"
+    if _mom_scan_lock.locked():
+        logger.info("MC250 momentum scan queued -- waiting for N500 momentum scan...")
+        mc_mom_scan_state["scan_stage"] = "Queued (waiting for N500 momentum scan)..."
+    async with _mom_scan_lock:
+        mc_mom_scan_state["scan_stage"] = "Loading OHLCV data..."
+        mc_mom_scan_state["next_scan_ts"] = None
+        logger.info("=== Microcap250 Momentum scan starting ===")
+        await _do_run_momentum_scan(scanner_mc, mc_mom_scan_state, "Microcap250-Momentum")
+
+
+async def _maybe_run_n500_momentum_scan() -> None:
+    """Scheduler wrapper for periodic N500 momentum rescan."""
+    if mom_scan_state["status"] not in ("scanning",):
+        await run_n500_momentum_scan()
+
+
+async def _maybe_run_mc250_momentum_scan() -> None:
+    """Scheduler wrapper for periodic MC250 momentum rescan."""
+    if mc_mom_scan_state["status"] not in ("scanning",):
+        await run_mc250_momentum_scan()
+
+
+# -- Dedicated Morning Star scan tasks -----------------------------------------
+
+async def _do_run_ms_scan(sc: StockScanner, state: dict, label: str) -> None:
+    """Run scanner.scan_morning_star() and store results in *state*.
+    Must be called while _ms_scan_lock is held."""
+    def _progress(stage: str):
+        state["scan_stage"] = stage
+
+    try:
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            None, lambda: sc.scan_morning_star(progress_cb=_progress)
+        )
+        now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
+        state.update({
+            "data":           results,
+            "last_updated":   now_ist,
+            "status":         "complete",
+            "scan_count":     state["scan_count"] + 1,
+            "filters_passed": len(results),
+            "next_scan_ts":   (time.time() + SCAN_INTERVAL_MINUTES * 60) if AUTO_RESCAN else None,
+            "scan_stage":     f"{len(results)} Morning Star stocks",
+            "error":          None,
+        })
+        logger.info("=== %s Morning Star Scan #%d complete -- %d qualifying stocks ===",
+                    label, state["scan_count"], len(results))
+
+    except Exception as exc:
+        logger.error("%s morning-star scan failed: %s", label, exc, exc_info=True)
+        state["status"] = "error"
+        state["error"]  = str(exc)
+        state["next_scan_ts"] = (time.time() + SCAN_INTERVAL_MINUTES * 60) if AUTO_RESCAN else None
+
+
+async def run_n500_ms_scan() -> None:
+    """Run a Morning Star pattern scan for the Nifty 500 universe."""
+    ms_scan_state["status"] = "scanning"
+    if _ms_scan_lock.locked():
+        logger.info("N500 Morning Star scan queued -- waiting for MC250...")
+        ms_scan_state["scan_stage"] = "Queued (waiting for MC250 morning-star scan)..."
+    async with _ms_scan_lock:
+        ms_scan_state["scan_stage"] = "Loading OHLCV data..."
+        ms_scan_state["next_scan_ts"] = None
+        logger.info("=== Nifty500 Morning Star scan starting ===")
+        await _do_run_ms_scan(scanner, ms_scan_state, "Nifty500-MS")
+
+
+async def run_mc250_ms_scan() -> None:
+    """Run a Morning Star pattern scan for the Microcap 250 universe."""
+    mc_ms_scan_state["status"] = "scanning"
+    if _ms_scan_lock.locked():
+        logger.info("MC250 Morning Star scan queued -- waiting for N500...")
+        mc_ms_scan_state["scan_stage"] = "Queued (waiting for N500 morning-star scan)..."
+    async with _ms_scan_lock:
+        mc_ms_scan_state["scan_stage"] = "Loading OHLCV data..."
+        mc_ms_scan_state["next_scan_ts"] = None
+        logger.info("=== Microcap250 Morning Star scan starting ===")
+        await _do_run_ms_scan(scanner_mc, mc_ms_scan_state, "Microcap250-MS")
+
+
+async def _maybe_run_n500_ms_scan() -> None:
+    """Scheduler wrapper for periodic N500 morning-star rescan."""
+    if ms_scan_state["status"] not in ("scanning",):
+        await run_n500_ms_scan()
+
+
+async def _maybe_run_mc250_ms_scan() -> None:
+    """Scheduler wrapper for periodic MC250 morning-star rescan."""
+    if mc_ms_scan_state["status"] not in ("scanning",):
+        await run_mc250_ms_scan()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _fund_cache_load()   # load fundamentals disk cache into memory (no network)
+    _sme_cache_load()    # load SME fundamentals disk cache into memory (no network)
+
     if AUTO_RESCAN:
-        scheduler.add_job(_maybe_run_n500_scan, "interval", minutes=SCAN_INTERVAL_MINUTES,     id="stock_scan")
-        scheduler.add_job(_maybe_run_mc_scan,   "interval", minutes=SCAN_INTERVAL_MINUTES + 1, id="mc_scan")
+        # Periodic rescan mode  -  scheduler triggers both scanners on a fixed interval
+        scheduler.add_job(_maybe_run_n500_scan,           "interval", minutes=SCAN_INTERVAL_MINUTES,     id="stock_scan")
+        scheduler.add_job(_maybe_run_mc_scan,             "interval", minutes=SCAN_INTERVAL_MINUTES + 1, id="mc_scan")
+        scheduler.add_job(_maybe_run_n500_momentum_scan,  "interval", minutes=SCAN_INTERVAL_MINUTES,     id="n500_mom_scan")
+        scheduler.add_job(_maybe_run_mc250_momentum_scan, "interval", minutes=SCAN_INTERVAL_MINUTES + 1, id="mc250_mom_scan")
+        # Morning Star scans run offset so they don't pile up with momentum scans
+        scheduler.add_job(_maybe_run_n500_ms_scan,        "interval", minutes=SCAN_INTERVAL_MINUTES + 2, id="n500_ms_scan")
+        scheduler.add_job(_maybe_run_mc250_ms_scan,       "interval", minutes=SCAN_INTERVAL_MINUTES + 3, id="mc250_ms_scan")
         scheduler.start()
         logger.info("Auto-rescan ENABLED: Nifty500 every %d min, Microcap250 every %d min",
                     SCAN_INTERVAL_MINUTES, SCAN_INTERVAL_MINUTES + 1)
         asyncio.create_task(run_scan())
         asyncio.create_task(run_mc_scan())
+        asyncio.create_task(run_n500_momentum_scan())
+        asyncio.create_task(run_mc250_momentum_scan())
+        asyncio.create_task(run_n500_ms_scan())
+        asyncio.create_task(run_mc250_ms_scan())
     else:
-        logger.info("Auto-rescan DISABLED: Nifty500 runs once on startup; "
-                    "Microcap250 runs on first tab visit only.")
-        asyncio.create_task(run_scan())
+        # On-demand mode  -  no background downloads at startup.
+        # Scans start when the user visits each tab:
+        #   Swing Trades -> /api/trigger  -> run_scan() + run_mc_scan()
+        #   Fundamentals -> /api/fundamentals  -> _fund_bg_worker (delta only)
+        #   SME          -> /api/sme/fundamentals -> _sme_bg_worker (delta only)
+        # Switching tabs sets a cancellation event to stop the previous worker.
+        logger.info(
+            "On-demand mode: caches loaded from disk "
+            "(N500=%d, MC250=%d tickers). All network downloads start on tab visit.",
+            len(scanner.tickers), len(scanner_mc.tickers),
+        )
+
     yield
     if AUTO_RESCAN:
         scheduler.shutdown(wait=False)
 
 
+async def _kick_fund_bg() -> None:
+    """On-demand fundamentals refresh utility  -  NOT called at startup.
+
+    Use this to proactively warm the fundamentals cache (e.g. after a
+    cold deploy with an empty cache).  In normal operation the lazy path
+    inside get_fundamentals() / get_sme_fundamentals() is sufficient.
+    """
+    global _fund_bg_running
+    if _fund_bg_running:
+        return
+    all_tickers = list(dict.fromkeys(NIFTY500_TICKERS + NIFTY_MICROCAP250_TICKERS))
+    stale_count = sum(
+        1 for t in all_tickers
+        if time.time() - _fund_data.get(t, {}).get("_ts", 0) >= _FUND_CACHE_TTL
+    )
+    if stale_count == 0:
+        logger.info("Fundamentals cache fully fresh  -  nothing to refresh")
+        return
+    logger.info("Fundamentals on-demand kick: %d/%d stale  -  starting background refresh",
+                stale_count, len(all_tickers))
+    _fund_bg_running = True
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _fund_bg_worker, all_tickers)
+
+
 app = FastAPI(title="Nifty Stock Scanner", lifespan=lifespan)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# -- Helpers -------------------------------------------------------------------
 def _validate_date_param(date: str):
     """Parse and validate a YYYY-MM-DD date string.
     Returns (DateType, None) on success, or (None, JSONResponse) on error."""
     try:
         target = DateType.fromisoformat(date)
     except ValueError:
-        return None, JSONResponse({"error": "Invalid date format — use YYYY-MM-DD"}, status_code=400)
+        return None, JSONResponse({"error": "Invalid date format  -  use YYYY-MM-DD"}, status_code=400)
     today = DateType.today()
     if target > today:
         return None, JSONResponse({"error": "Date cannot be in the future"}, status_code=400)
@@ -284,7 +560,7 @@ def _make_sse_generator(state: dict):
 _SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
 
 
-# ── Routes ───────────────────────────────────────────────────────────────────
+# -- Routes -------------------------------------------------------------------
 @app.get("/api/config")
 async def get_config() -> JSONResponse:
     """Return all scan filter constants so the UI can render them without hardcoding."""
@@ -331,6 +607,32 @@ async def force_n500_rescan() -> JSONResponse:
     return JSONResponse({"triggered": True, "status": "scanning"})
 
 
+@app.post("/api/stock-momentum/rescan")
+async def force_momentum_rescan() -> JSONResponse:
+    """Force fresh momentum-only scans for both N500 and MC250 universes."""
+    tasks_triggered = 0
+    if mom_scan_state["status"] not in ("scanning",):
+        asyncio.create_task(run_n500_momentum_scan())
+        tasks_triggered += 1
+    if mc_mom_scan_state["status"] not in ("scanning",):
+        asyncio.create_task(run_mc250_momentum_scan())
+        tasks_triggered += 1
+    return JSONResponse({"triggered": tasks_triggered > 0, "status": "scanning"})
+
+
+@app.post("/api/morning-momentum/rescan")
+async def force_ms_rescan() -> JSONResponse:
+    """Force fresh Morning Star pattern scans for both N500 and MC250 universes."""
+    tasks_triggered = 0
+    if ms_scan_state["status"] not in ("scanning",):
+        asyncio.create_task(run_n500_ms_scan())
+        tasks_triggered += 1
+    if mc_ms_scan_state["status"] not in ("scanning",):
+        asyncio.create_task(run_mc250_ms_scan())
+        tasks_triggered += 1
+    return JSONResponse({"triggered": tasks_triggered > 0, "status": "scanning"})
+
+
 @app.post("/api/microcap/rescan")
 async def force_mc_rescan() -> JSONResponse:
     """Force a fresh Microcap250 scan immediately."""
@@ -366,7 +668,7 @@ async def get_mc_results() -> JSONResponse:
 async def trigger_n500_scan() -> JSONResponse:
     global n500_tab_active
     n500_tab_active = True
-    if AUTO_RESCAN and scan_state["status"] not in ("scanning",):
+    if scan_state["status"] not in ("scanning",):
         asyncio.create_task(run_scan())
         return JSONResponse({"triggered": True, "status": "scanning"})
     return JSONResponse({"triggered": False, "status": scan_state["status"]})
@@ -375,15 +677,10 @@ async def trigger_n500_scan() -> JSONResponse:
 @app.post("/api/microcap/trigger")
 async def trigger_mc_scan() -> JSONResponse:
     global mc_scan_ever_triggered, n500_tab_active
-    n500_tab_active = False
+    n500_tab_active = True
     mc_scan_ever_triggered = True
-
     status = mc_scan_state["status"]
-    should_trigger = (
-        status == "idle"
-        or (AUTO_RESCAN and status not in ("scanning",))
-    )
-    if should_trigger:
+    if status not in ("scanning",):
         asyncio.create_task(run_mc_scan())
         return JSONResponse({"triggered": True, "status": "scanning"})
     return JSONResponse({"triggered": False, "status": status})
@@ -401,6 +698,29 @@ async def stream_mc_results() -> StreamingResponse:
     """SSE stream for Nifty Microcap 250."""
     return StreamingResponse(_make_sse_generator(mc_scan_state)(),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@app.post("/api/tab-active")
+async def set_active_tab(tab: str = Query(..., description="Active tab name")) -> JSONResponse:
+    """Signal which tab is currently visible.
+    Cancels any BG workers belonging to tabs other than the active one."""
+    global _active_tab
+    prev = _active_tab
+    _active_tab = tab
+
+    # Cancel workers whose tab is no longer active
+    if tab != "fund":
+        _fund_cancel.set()
+    else:
+        _fund_cancel.clear()   # allow fund worker to proceed
+
+    if tab != "sme":
+        _sme_cancel.set()
+    else:
+        _sme_cancel.clear()    # allow sme worker to proceed
+
+    logger.debug("Tab active: %s (prev: %s)", tab, prev)
+    return JSONResponse({"tab": tab, "prev": prev})
 
 
 @app.get("/api/stock/{ticker}")
@@ -430,65 +750,82 @@ async def analyze_stock(
         return JSONResponse({"error": str(exc), "ticker": ticker}, status_code=500)
 
 
-# ── NSE / BSE Sector Index definitions ───────────────────────────────────────
+# -- NSE / BSE Sector Index definitions ---------------------------------------
 # Each entry: (display_name, primary_yf_ticker, [etf_fallback_tickers])
-# Tickers that fail to download are silently skipped — no error, just absent
-# from the heat map. This makes it safe to include many candidates.
+#
+# NOTE: tvDatafeed (TradingView library) is no longer on PyPI and cannot be
+# installed. Yahoo Finance is also unreachable live due to corporate SSL proxy.
+# ALL data is served from disk cache (cache/ohlcv/IDX_*.pkl).
+#
+# Cache key: ^NSEBANK -> IDX_NSEBANK.pkl,  ^BSEBANKEX -> IDX_BSEBANKEX.pkl etc.
+# As long as the cache file exists and is fresh, Live download is not needed.
+#
+# Cached & serving (as of May 2026):
+#   NSE: ^NSEBANK ^CNXIT ^CNXAUTO ^CNXPHARMA ^CNXFMCG ^CNXMETAL ^CNXREALTY
+#        ^CNXENERGY ^CNXPSUBANK ^CNXHEALTH ^CNXFIN ^CNXMEDIA ^CNXINFRA
+#        ^CNXOIL ^CNXCONSUMER ^CNXCMDT ^CNXMNC ^CNXPSE ^CNXSERVICE
+#        ^CNXMIDCAP ^CNXSC
+#   BSE: ^BSEAUTO ^BSEBANKEX ^BSECD ^BSEFMCG ^BSEHC ^BSEIT ^BSEOIL ^BSETECK
+#
+# No cache (will be silently skipped until downloadable):
+#   ^CNXPVTBANK ^CNXCAPGOODS ^CNXDEFENCE ^CNXPOWER ^CNXMFG
 _NSE_SECTOR_INDICES = [
-    # ── Broad NSE sectors (original set) ─────────────────────────────────────
-    ("Nifty Bank",            "^NSEBANK",       ["BANKBEES.NS",    "BANKNIFTY.NS"]),
-    ("Nifty IT",              "^CNXIT",         ["ITBEES.NS",      "ITETF.NS"]),
-    ("Nifty Auto",            "^CNXAUTO",       ["AUTOBEES.NS"]),
-    ("Nifty Pharma",          "^CNXPHARMA",     ["PHARMABEES.NS"]),
-    ("Nifty FMCG",            "^CNXFMCG",       ["FMCGIETF.NS"]),
-    ("Nifty Metal",           "^CNXMETAL",      ["METALBEES.NS",   "METAL.NS"]),
-    ("Nifty Realty",          "^CNXREALTY",     ["REALTYBEES.NS"]),
-    ("Nifty Energy",          "^CNXENERGY",     ["ENERGYBEES.NS",  "ENERGIETF.NS"]),
-    ("Nifty PSU Bank",        "^CNXPSUBANK",    ["PSUBNKBEES.NS"]),
-    ("Nifty Healthcare",      "^CNXHEALTH",     ["HEALTHIETF.NS"]),
-    ("Nifty Financial Svc",   "^CNXFIN",        ["FINIETF.NS"]),
-    ("Nifty Media",           "^CNXMEDIA",      []),
-    ("Nifty Infra",           "^CNXINFRA",      ["INFRABEES.NS",   "INFRAIETF.NS"]),
-    ("Nifty Oil & Gas",       "^CNXOIL",        ["OILIETF.NS"]),
-    ("Nifty Consumer Dur",    "^CNXCONSUMER",   ["CONSUMBEES.NS"]),
-    ("Nifty Commodities",     "^CNXCMDT",       []),
+    # -- Broad NSE sectors (all have fresh disk cache) ------------------------
+    ("Nifty Bank",            "^NSEBANK",    ["BANKBEES.NS"]),
+    ("Nifty IT",              "^CNXIT",      ["ITBEES.NS",     "ITETF.NS"]),
+    ("Nifty Auto",            "^CNXAUTO",    ["AUTOBEES.NS"]),
+    ("Nifty Pharma",          "^CNXPHARMA",  ["PHARMABEES.NS"]),
+    ("Nifty FMCG",            "^CNXFMCG",    ["FMCGIETF.NS"]),
+    ("Nifty Metal",           "^CNXMETAL",   ["METALBEES.NS"]),
+    ("Nifty Realty",          "^CNXREALTY",  ["REALTYBEES.NS"]),
+    ("Nifty Energy & Power",  "^CNXENERGY",  ["ENERGYBEES.NS"]),  # includes NTPC, PowerGrid, Tata Power
+    ("Nifty PSU Bank",        "^CNXPSUBANK", ["PSUBNKBEES.NS"]),
+    ("Nifty Healthcare",      "^CNXHEALTH",  ["HEALTHIETF.NS"]),
+    ("Nifty Financial Svc",   "^CNXFIN",     ["FINIETF.NS"]),
+    ("Nifty Media",           "^CNXMEDIA",   []),
+    ("Nifty Infra",           "^CNXINFRA",   ["INFRABEES.NS"]),
+    ("Nifty Oil & Gas",       "^CNXOIL",     ["OILIETF.NS"]),
+    ("Nifty Consumer Dur",    "^CNXCONSUMER",["CONSUMBEES.NS"]),
+    ("Nifty Commodities",     "^CNXCMDT",    []),
+    ("Nifty MNC",             "^CNXMNC",     []),
+    ("Nifty PSE",             "^CNXPSE",     ["CPSE.NS"]),
+    ("Nifty Services",        "^CNXSERVICE", []),
+    ("Nifty Midcap 100",      "^CNXMIDCAP",  ["MID150BEES.NS", "NIFTYMID.NS"]),
+    ("Nifty Smallcap 100",    "^CNXSC",      ["SMALLCAP.NS"]),
 
-    # ── Granular NSE sub-sectors ──────────────────────────────────────────────
-    ("Nifty Private Bank",    "^CNXPVTBANK",    ["PVTBANKETF.NS",  "PBANKETF.NS"]),
-    ("Nifty Capital Goods",   "^CNXCAPGOODS",   ["CAPGOODS.NS"]),
-    ("Nifty Defence",         "^CNXDEFENCE",    ["DEFENIETF.NS",   "MAFDEF.NS"]),
-    ("Nifty Mfg",             "^CNXMFG",        ["MFGETF.NS"]),
-    ("Nifty MNC",             "^CNXMNC",        []),
-    ("Nifty CPSE",            "^CNXCPSE",       ["CPSE.NS"]),
-    ("Nifty PSE",             "^CNXPSE",        []),
-    ("Nifty Services",        "^CNXSERVICE",    []),
-    ("Nifty Midcap 100",      "^CNXMIDCAP",     ["MID150BEES.NS",  "NIFMID50.NS"]),
-    ("Nifty Smallcap 100",    "^CNXSC",         ["NIFTYSML.NS",    "SMALLCAP.NS"]),
-    ("Nifty India Digital",   "^CNXDIGITALIA",  ["DIGIT.NS"]),
-    ("Nifty Chemicals",       "^CNXCHEM",       []),
+    # -- BSE sector indices (all have fresh disk cache from today) -------------
+    ("BSE Bankex",            "^BSEBANKEX",  ["BANKBEES.NS"]),
+    ("BSE IT",                "^BSEIT",      ["ITBEES.NS"]),
+    ("BSE Teck",              "^BSETECK",    ["ITETF.NS"]),
+    ("BSE Healthcare",        "^BSEHC",      ["HEALTHIETF.NS"]),
+    ("BSE FMCG",              "^BSEFMCG",    ["FMCGIETF.NS"]),
+    ("BSE Auto",              "^BSEAUTO",    ["AUTOBEES.NS"]),
+    ("BSE Consumer Dur",      "^BSECD",      ["CONSUMBEES.NS"]),
+    ("BSE Oil & Gas",         "^BSEOIL",     ["OILIETF.NS"]),
 
-    # ── BSE Sector Indices ────────────────────────────────────────────────────
-    ("BSE Bankex",            "^BSEBANKEX",     ["BANKBEES.NS"]),
-    ("BSE Power",             "^BSEPOW",        ["POWERIETF.NS",   "POWERBEES.NS"]),
-    ("BSE Capital Goods",     "^BSECPGS",       ["CAPGOODS.NS"]),
-    ("BSE Teck",              "^BSETECK",       ["ITBEES.NS"]),
-    ("BSE Consumer Dur",      "^BSECD",         ["CONSUMBEES.NS"]),
-    ("BSE FMCG",              "^BSEFMCG",       ["FMCGIETF.NS"]),
-    ("BSE Healthcare",        "^BSEHC",         ["HEALTHIETF.NS"]),
-    ("BSE Oil & Gas",         "^BSEOIL",        ["OILIETF.NS"]),
-    ("BSE Realty",            "^BSERET",        ["REALTYBEES.NS"]),
-    ("BSE Metal",             "^BSEMET",        ["METALBEES.NS"]),
-    ("BSE Auto",              "^BSEAUTO",       ["AUTOBEES.NS"]),
-    ("BSE IT",                "^BSEIT",         ["ITBEES.NS"]),
+    # -- No cache yet  -  silently skipped until network is available ------------
+    ("Nifty Private Bank",    "^CNXPVTBANK", ["PVTBANKETF.NS"]),
+    ("Nifty Capital Goods",   "^CNXCAPGOODS",["CAPGOODS.NS"]),
+    ("Nifty Defence",         "^CNXDEFENCE", ["DEFENIETF.NS"]),
+    ("Nifty Power",           "^CNXPOWER",   ["POWERIETF.NS", "POWERBEES.NS"]),
+    ("Nifty Mfg",             "^CNXMFG",     ["MFGETF.NS"]),
 ]
 
-# In-memory cache (short TTL — disk cache handles real freshness)
+# In-memory cache (short TTL  -  disk cache handles real freshness)
 _sec_mom_cache: dict = {"data": None, "ts": 0.0, "ttl": 300}
 
 
-def _compute_sector_momentum() -> dict:
-    """Download NSE & BSE sector index OHLCV (~44 indices), compute momentum,
-    with disk-cache strategy. Indices that fail to download are skipped silently."""
+def _compute_sector_momentum(as_of_date=None) -> dict:
+    """Compute momentum metrics for NSE/BSE sector indices.
+
+    All data is served from disk cache (cache/ohlcv/IDX_*.pkl).
+    Pass as_of_date (datetime.date) to compute metrics as-of a historical date.
+    Live download is attempted for incremental updates but falls back to
+    stale cache gracefully when Yahoo Finance is unreachable (e.g. corporate
+    SSL proxy).  As of May 2026, 29 sector indices have fresh cached data.
+
+    Note: tvDatafeed (TradingView) is no longer on PyPI and is not used.
+    """
     import pandas as _pd
     from config import (MARKET_BENCHMARK_TICKER, MARKET_BENCHMARK_ETF_FALLBACKS,
                         CACHE_UPDATE_DAYS)
@@ -517,6 +854,18 @@ def _compute_sector_momentum() -> dict:
 
     bench_df = _cached_fetch("Nifty500 Benchmark",
                              MARKET_BENCHMARK_TICKER, MARKET_BENCHMARK_ETF_FALLBACKS)
+
+    # Slice to historical date if requested
+    if as_of_date is not None:
+        import pandas as _pd2
+        def _slice_to_date(df):
+            if df is None:
+                return None
+            mask = _pd2.to_datetime(df.index).date <= as_of_date
+            sliced = df[mask]
+            return sliced if not sliced.empty else None
+        bench_df = _slice_to_date(bench_df)
+
     bench_ret5 = bench_ret20 = 0.0
     if bench_df is not None:
         bc = bench_df["Close"].dropna()
@@ -529,38 +878,75 @@ def _compute_sector_momentum() -> dict:
     for name, primary, fallbacks in _NSE_SECTOR_INDICES:
         try:
             df = _cached_fetch(name, primary, fallbacks)
+            if as_of_date is not None:
+                df = _slice_to_date(df)
             if df is None or len(df) < 25:
                 continue
             c = df["Close"].dropna()
             if len(c) < 25:
                 continue
 
+            ret_3d  = round(float((c.iloc[-1] / c.iloc[-4]  - 1) * 100), 2) if len(c) >= 4  else 0.0
             ret_5d  = round(float((c.iloc[-1] / c.iloc[-6]  - 1) * 100), 2) if len(c) >= 6  else 0.0
             ret_20d = round(float((c.iloc[-1] / c.iloc[-21] - 1) * 100), 2) if len(c) >= 21 else 0.0
             ret_50d = round(float((c.iloc[-1] / c.iloc[-51] - 1) * 100), 2) if len(c) >= 51 else 0.0
 
-            rsi = round(float(StockScanner._rsi(c, 14).iloc[-1]), 1)
+            rsi_14 = round(float(StockScanner._rsi(c, 14).iloc[-1]), 1)
+            rsi_9  = round(float(StockScanner._rsi(c, 9).iloc[-1]),  1)
 
+            ema9  = float(c.ewm(span=9,  adjust=False, min_periods=9).mean().iloc[-1])
             ema20 = float(c.ewm(span=20, adjust=False, min_periods=20).mean().iloc[-1])
             ema50 = float(c.ewm(span=50, adjust=False, min_periods=50).mean().iloc[-1])
+            pct_above_ema9  = round((float(c.iloc[-1]) / ema9  - 1) * 100, 2) if ema9  > 0 else 0.0
             pct_above_ema20 = round((float(c.iloc[-1]) / ema20 - 1) * 100, 2) if ema20 > 0 else 0.0
 
-            rs_vs_market = round(ret_20d - bench_ret20, 2)
-            score = round(ret_20d * 0.5 + rs_vs_market * 0.3 + ret_5d * 0.2, 3)
+            # 5-day and 20-day relative strength vs benchmark
+            rs_5d  = round(ret_5d  - bench_ret5,  2)
+            rs_20d = round(ret_20d - bench_ret20, 2)
+
+            # MACD(12,26,9) histogram as % of price -- positive = building momentum
+            _ema12 = c.ewm(span=12, adjust=False, min_periods=12).mean()
+            _ema26 = c.ewm(span=26, adjust=False, min_periods=26).mean()
+            _macd  = _ema12 - _ema26
+            _sig   = _macd.ewm(span=9, adjust=False, min_periods=9).mean()
+            _price = float(c.iloc[-1])
+            macd_hist_pct = round(float((_macd - _sig).iloc[-1]) / _price * 100, 4) if _price > 0 else 0.0
+
+            # RSI-9 swing sweet-spot score: peaks at RSI=65, decays outside 45-85 band
+            rsi_swing = max(0.0, 2.0 - abs(rsi_9 - 65) * 0.10)
+
+            # Swing score -- optimised for 1-10 day momentum trades
+            # Weights: 5D return  30% | 5D RS vs Nifty  25% | 3D momentum  20%
+            #          RSI-9 zone 10% | above EMA9       8% | MACD hist    7%
+            score = round(
+                ret_5d         * 0.30 +
+                rs_5d          * 0.25 +
+                ret_3d         * 0.20 +
+                rsi_swing      * 0.50 +   # [0, 2] scaled -> max +1.0
+                pct_above_ema9 * 0.08 +
+                macd_hist_pct  * 3.50,    # MACD hist is small %; amplify
+                3,
+            )
 
             results.append({
-                "sector":        name,
-                "ticker":        primary,
-                "price":         round(float(c.iloc[-1]), 2),
-                "last_date":     str(c.index[-1].date()),
-                "ret_5d":        ret_5d,
-                "ret_20d":       ret_20d,
-                "ret_50d":       ret_50d,
-                "rsi":           rsi,
-                "above_ema":     bool(ema20 > ema50),
-                "pct_above_ema": pct_above_ema20,
-                "rs_vs_market":  rs_vs_market,
-                "score":         score,
+                "sector":          name,
+                "ticker":          primary,
+                "price":           round(_price, 2),
+                "last_date":       str(c.index[-1].date()),
+                "ret_3d":          ret_3d,
+                "ret_5d":          ret_5d,
+                "ret_20d":         ret_20d,
+                "ret_50d":         ret_50d,
+                "rsi":             rsi_14,        # RSI-14 kept for backward compat
+                "rsi_9":           rsi_9,
+                "above_ema":       bool(ema9 > ema20),   # EMA9 > EMA20 (swing trend)
+                "above_ema_slow":  bool(ema20 > ema50),  # medium-term trend
+                "pct_above_ema":   pct_above_ema9,       # vs EMA9
+                "pct_above_ema20": pct_above_ema20,
+                "rs_vs_market":    rs_20d,         # 20D RS kept for backward compat
+                "rs_5d":           rs_5d,
+                "macd_hist_pct":   macd_hist_pct,
+                "score":           score,
             })
             time.sleep(0.05)
         except Exception as exc:
@@ -573,7 +959,8 @@ def _compute_sector_momentum() -> dict:
         "total_sectors": len(results),
         "bench_ret20d":  round(bench_ret20, 2),
         "bench_ret5d":   round(bench_ret5,  2),
-        "last_updated":  datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST"),
+        "last_updated":  (str(as_of_date) + " (historical)") if as_of_date else datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST"),
+        "as_of_date":    str(as_of_date) if as_of_date else None,
         "status":        "complete" if results else "no_data",
     }
 
@@ -604,12 +991,1244 @@ async def _sector_momentum_response(bust_cache: bool) -> JSONResponse:
 
 
 @app.get("/api/sector-momentum")
-async def get_sector_momentum(refresh: int = 0) -> JSONResponse:
-    """NSE sector index momentum rankings. Pass ?refresh=1 to bust the in-memory cache."""
+async def get_sector_momentum(
+    refresh: int = 0,
+    date: str = Query(None, description="Historical date YYYY-MM-DD; omit for live data"),
+) -> JSONResponse:
+    """NSE sector index momentum rankings. Pass ?refresh=1 to bust the in-memory cache.
+    Pass ?date=YYYY-MM-DD for historical results computed as-of that date."""
+    if date:
+        target, err = _validate_date_param(date)
+        if err:
+            return err
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: _compute_sector_momentum(as_of_date=target)
+            )
+            return JSONResponse(result)
+        except Exception as exc:
+            logger.error("Historical sector momentum failed: %s", exc, exc_info=True)
+            return JSONResponse({"error": str(exc), "sectors": [], "all_sectors": [],
+                                 "total_sectors": 0, "status": "error"}, status_code=500)
     return await _sector_momentum_response(bust_cache=bool(refresh))
 
 
-@app.get("/api/sectors")
+# -- Fundamentals disk cache ---------------------------------------------------
+# Persists D/E, market cap, ROE, promoter holding, sales growth across restarts.
+# Cache file: cache/fundamentals_data.json  (one entry per NSE ticker)
+# TTL: 24 hours per ticker (re-fetched in background on next tab visit)
+
+from pathlib import Path as _PL
+
+_FUND_CACHE_FILE = _PL("cache/fundamentals_data.json")
+_FUND_CACHE_TTL  = 24 * 3600        # 24 h per ticker
+_fund_data: dict = {}               # {ticker: {sector, debt_equity, ...}, ...}
+_fund_bg_running: bool = False
+
+
+def _fund_cache_load() -> None:
+    """Load fundamentals disk cache into memory (called once at startup).
+    Automatically invalidates entries that are missing key fields so they get
+    re-fetched by the background worker.
+    """
+    global _fund_data
+    try:
+        if _FUND_CACHE_FILE.exists():
+            _fund_data = json.loads(_FUND_CACHE_FILE.read_text(encoding="utf-8"))
+            invalidated = 0
+            for entry in _fund_data.values():
+                if isinstance(entry, dict) and entry.get("_ts", 0) > 0:
+                    missing_basic    = "roce" not in entry
+                    missing_enhanced = not any(k in entry for k in
+                                               ("fii_holding", "current_price", "peg_ratio"))
+                    # Invalidate if missing new debt/cashflow fields (v3 schema)
+                    missing_cashflow = not any(k in entry for k in
+                                               ("current_ratio", "cash_from_operations", "cfo_yield"))
+                    if missing_basic or missing_enhanced or missing_cashflow:
+                        entry["_ts"] = 0   # force re-fetch without deleting
+                        invalidated += 1
+            logger.info(
+                "Fundamentals disk cache loaded: %d entries (%d invalidated  -  stale/missing fields)",
+                len(_fund_data), invalidated,
+            )
+        else:
+            _fund_data = {}
+    except Exception as exc:
+        logger.warning("Could not load fundamentals cache: %s", exc)
+        _fund_data = {}
+
+
+def _fund_cache_save() -> None:
+    """Persist in-memory fundamentals cache to disk."""
+    try:
+        _FUND_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _FUND_CACHE_FILE.write_text(
+            json.dumps(_fund_data, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning("Fundamentals cache save failed: %s", exc)
+
+
+def _fund_refresh_ticker(ticker: str) -> tuple:
+    """Fetch & cache fundamentals for one ticker, including derived metrics.
+
+    Returns (result, content_changed) where:
+      result           -  the full data dict stored in _fund_data
+      content_changed  -  True only when at least one data field (excluding _ts)
+                        actually changed vs the previously cached value.
+
+    _ts is always updated in memory so the TTL clock resets, preventing
+    unnecessary re-downloads on the next cycle.  The caller decides whether
+    to persist the cache to disk based on content_changed.
+    """
+    from data_sources import fundamentals as _fc
+    import math
+
+    result: dict = {}
+    try:
+        sector, de_x100, mc_inr = _fc.get(ticker)
+        if sector:
+            result["sector"] = sector
+        if de_x100 is not None:
+            result["debt_equity"]   = round(float(de_x100) / 100, 2)
+        if mc_inr is not None:
+            result["market_cap_cr"] = round(float(mc_inr) / 1e7, 0)
+    except Exception:
+        pass
+
+    try:
+        extra = _fc.get_extra_fundamentals(ticker)
+        for k in ("roce", "roe", "roe_5y", "roe_10y",
+                  "promoter_holding", "fii_holding", "dii_holding",
+                  "sales_growth_pct", "sales_growth_5y", "sales_growth_10y",
+                  "profit_growth_3y", "profit_growth_5y", "profit_growth_10y",
+                  "sales_growth_ttm", "profit_growth_ttm",
+                  "pe_ratio", "book_value", "dividend_yield",
+                  "debt_equity", "market_cap_cr", "current_price",
+                  "current_ratio", "cash_from_operations"):
+            if k in extra and extra[k] is not None:
+                result[k] = extra[k]
+    except Exception:
+        pass
+
+    # -- Compute derived fundamental metrics ---------------------------------
+    pe   = result.get("pe_ratio")
+    bv   = result.get("book_value")
+    cp   = result.get("current_price")
+    pg3  = result.get("profit_growth_3y")
+    pg5  = result.get("profit_growth_5y")
+    mc   = result.get("market_cap_cr")
+    cfo  = result.get("cash_from_operations")
+
+    eps = None
+    if cp and pe and pe > 0:
+        eps = cp / pe
+
+    growth_for_peg = pg3 if (pg3 is not None and pg3 > 0) else (pg5 if pg5 and pg5 > 0 else None)
+    if pe and pe > 0 and growth_for_peg and growth_for_peg > 0:
+        result["peg_ratio"] = round(pe / growth_for_peg, 2)
+
+    if pe and pe > 0:
+        result["earnings_yield"] = round(100.0 / pe, 2)
+
+    if cp and bv and bv > 0:
+        result["pb_ratio"] = round(cp / bv, 2)
+
+    if eps and eps > 0 and bv and bv > 0:
+        try:
+            graham = math.sqrt(22.5 * eps * bv)
+            result["graham_number"] = round(graham, 2)
+            if cp and cp > 0:
+                result["graham_mos"] = round((graham - cp) / cp * 100, 1)
+        except Exception:
+            pass
+
+    if cfo is not None and mc and mc > 0:
+        result["cfo_yield"] = round(cfo / mc * 100, 2)
+
+    fii = result.get("fii_holding")
+    dii = result.get("dii_holding")
+    if fii is not None and dii is not None:
+        result["inst_holding"] = round(fii + dii, 2)
+    elif fii is not None:
+        result["inst_holding"] = fii
+
+    sg3  = result.get("sales_growth_pct")
+    sg10 = result.get("sales_growth_10y")
+    if sg3 is not None and sg10 is not None:
+        result["sales_growth_avg"] = round((sg3 + sg10) / 2, 1)
+
+    # -- Content-change detection (exclude _ts from comparison) --------------
+    existing = _fund_data.get(ticker, {})
+    content_changed = False
+    # Check if any new field differs from cached value
+    for k, v in result.items():
+        if existing.get(k) != v:
+            content_changed = True
+            break
+    # Check if any cached field was dropped in the new fetch
+    if not content_changed:
+        for k in existing:
+            if k == "_ts":
+                continue
+            if k not in result:
+                content_changed = True
+                break
+
+    result["_ts"] = time.time()   # always refresh TTL in memory
+    _fund_data[ticker] = result
+    return result, content_changed
+
+
+def _fund_bg_worker(tickers: list, batch: int = 120) -> None:
+    """Blocking background worker  -  runs via run_in_executor.
+    Only downloads stale tickers (TTL check).  Saves to disk only when at
+    least one field value actually changed vs the cached entry  -  pure
+    timestamp-only refreshes do NOT trigger a disk write mid-run.
+    One final save is always performed at the end to persist updated _ts
+    values so the next startup doesn't re-download already-fresh tickers.
+    """
+    global _fund_bg_running
+    total_refreshed = 0
+    total_changed   = 0
+    now = time.time()
+
+    # Only process tickers whose cache entry has expired
+    stale = [t for t in tickers
+             if now - _fund_data.get(t, {}).get("_ts", 0) >= _FUND_CACHE_TTL]
+
+    if not stale:
+        logger.info("Fundamentals BG worker: all %d tickers fresh  -  nothing to download", len(tickers))
+        _fund_bg_running = False
+        return
+
+    logger.info("Fundamentals BG worker: %d stale / %d total  -  starting incremental refresh",
+                len(stale), len(tickers))
+
+    for i in range(0, len(stale), batch):
+        # Check cancellation before every batch
+        if _fund_cancel.is_set():
+            logger.info("Fundamentals BG worker: cancelled after %d/%d tickers (tab switched)",
+                        total_refreshed, len(stale))
+            _fund_cache_save()
+            _fund_bg_running = False
+            return
+
+        chunk = stale[i: i + batch]
+        changed_in_chunk  = 0
+        fetched_in_chunk  = 0
+        for t in chunk:
+            if _fund_cancel.is_set():
+                logger.info("Fund BG worker: cancelled mid-batch at ticker %s", t)
+                break
+            try:
+                result, changed = _fund_refresh_ticker(t)
+                if any(k in result for k in ("roce", "roe", "promoter_holding")):
+                    fetched_in_chunk += 1
+                if changed:
+                    changed_in_chunk += 1
+                time.sleep(0.20)          # polite rate limit (~5 req/s)
+            except Exception as exc:
+                logger.debug("Fund BG worker %s: %s", t, exc)
+
+        total_refreshed += fetched_in_chunk
+        total_changed   += changed_in_chunk
+
+        # Save mid-batch only when content actually changed  -  skip pure-ts refreshes
+        if changed_in_chunk:
+            _fund_cache_save()
+            logger.info("Fundamentals BG: batch %d/%d  -  %d fetched, %d changed -> saved",
+                        min(i + batch, len(stale)), len(stale),
+                        fetched_in_chunk, changed_in_chunk)
+        else:
+            logger.info("Fundamentals BG: batch %d/%d  -  %d fetched, no content changes (skipped save)",
+                        min(i + batch, len(stale)), len(stale), fetched_in_chunk)
+
+    # Always do one final save to persist updated _ts values even when no
+    # content changed  -  this prevents re-downloading the same data again on restart.
+    _fund_cache_save()
+    logger.info("Fundamentals BG worker done: %d fetched, %d content-changed, final save written",
+                total_refreshed, total_changed)
+    _fund_bg_running = False
+
+
+# ---------------------------------------------------------------------------
+# Fundamentals hard-gate thresholds  (independent of swing-trade config.py)
+# These are STRICT quality gates — NOT the liberal swing-trade values.
+# ---------------------------------------------------------------------------
+_FUND_ROCE_MIN        = 12.0   # ROCE ≥ 12%  (efficient use of capital)
+_FUND_ROE_MIN         = 12.0   # ROE ≥ 12%   (return on shareholders equity)
+_FUND_DE_MAX          =  1.0   # D/E ≤ 1.0   (conservative; swing trade uses 3.0 — NOT used here)
+_FUND_PROFIT_GROW_MIN =  8.0   # 3Y profit CAGR ≥ 8%  (no loss-makers or stagnant earners)
+_FUND_SALES_GROW_MIN  =  5.0   # 3Y revenue CAGR ≥ 5% (growing business)
+_FUND_CFO_POSITIVE    = True   # Cash from Operations must be > 0  (real earnings, not just accounting profit)
+_FUND_MIN_KEY_FIELDS  =  2     # require ≥ 2 key fields present or skip (avoid data-empty stubs)
+
+
+def _passes_fund_gates(rec: dict) -> bool:
+    """Hard fundamental quality gates — applied BEFORE scoring.
+
+    Returns False if:
+      - Fewer than _FUND_MIN_KEY_FIELDS key fields are present (data pending)
+      - Any available field fails its strict threshold.
+
+    Active gates:
+      ROCE ≥ 12%          Capital efficiency
+      ROE ≥ 12%           Return on equity
+      D/E ≤ 1.0           Low financial leverage
+      Profit Growth ≥ 8%  No loss-makers / stagnant earners
+      Sales Growth ≥ 5%   Growing business
+      CFO > 0             Positive operating cash flow (real earnings quality)
+
+    NULL values = data not yet downloaded → gate not applied for that field
+    (avoids incorrectly rejecting stocks currently being refreshed).
+    """
+    # Count present key fields; exclude stubs with no data at all
+    key_vals = [
+        rec.get("roce"),
+        rec.get("roe") or rec.get("roe_5y") or rec.get("roe_10y"),
+        rec.get("profit_growth_3y") or rec.get("profit_growth_5y"),
+        rec.get("sales_growth_pct") or rec.get("sales_growth_5y"),
+    ]
+    if sum(1 for v in key_vals if v is not None) < _FUND_MIN_KEY_FIELDS:
+        return False   # too little data — skip
+
+    # ROCE gate
+    roce = rec.get("roce")
+    if roce is not None and float(roce) < _FUND_ROCE_MIN:
+        return False
+
+    # ROE gate (prefer longest history)
+    roe = rec.get("roe_10y") or rec.get("roe_5y") or rec.get("roe")
+    if roe is not None and float(roe) < _FUND_ROE_MIN:
+        return False
+
+    # D/E gate — STRICT (1.0 max, not the liberal 3.0 used for swing trade)
+    de = rec.get("debt_equity")
+    if de is not None and float(de) > _FUND_DE_MAX:
+        return False
+
+    # Profit growth gate — rejects loss-makers and stagnant earnings
+    pg = rec.get("profit_growth_3y") or rec.get("profit_growth_5y")
+    if pg is not None and float(pg) < _FUND_PROFIT_GROW_MIN:
+        return False
+
+    # Sales (revenue) growth gate — rejects contracting / stagnant businesses
+    sg = rec.get("sales_growth_pct") or rec.get("sales_growth_5y")
+    if sg is not None and float(sg) < _FUND_SALES_GROW_MIN:
+        return False
+
+    # Cash Flow gate — rejects cash-burning businesses (negative operating cash flow)
+    # A company showing accounting profit but generating negative operating cash is
+    # a warning sign; only companies with CFO > 0 demonstrate real earnings quality.
+    if _FUND_CFO_POSITIVE:
+        cfo = rec.get("cash_from_operations")
+        if cfo is not None and float(cfo) <= 0:
+            return False
+
+    return True
+
+
+def _fund_quality_score(rec: dict) -> float:
+    """12-factor fundamental quality score for high-quality growth stocks.
+
+    Hard gates (_passes_fund_gates) are applied first; only passing stocks
+    reach this function, so neutral defaults for missing data are set to 0
+    (no free credits — missing data contributes nothing to the rank).
+
+    +- Quality (28 pts) -----------------------------------------------------+
+    |  ROCE             15 pts  Capital efficiency (penalises high-debt firms)|
+    |  ROE consistency   8 pts  Long-term avg ROE shows durable moat          |
+    |  Promoter holding  5 pts  Management skin in the game                   |
+    +- Debt & Liquidity (15 pts) -------------------------------------------- |
+    |  Debt / Equity    10 pts  Low debt = financial resilience (max 1.0)     |
+    |  Current Ratio     5 pts  Short-term solvency (>2.0 = healthy)          |
+    +- Cash Flow (12 pts) ---------------------------------------------------- |
+    |  CFO Yield        12 pts  Operating cash as % of Mkt Cap (real earnings)|
+    +- Growth (20 pts) -------------------------------------------------------- |
+    |  Revenue growth   10 pts  Avg of 3Y + 10Y sales CAGR                   |
+    |  Profit growth     5 pts  3Y earnings CAGR                             |
+    |  Inst. confidence  5 pts  FII + DII combined (smart money)             |
+    +- Value (15 pts) ------------------------------------------------------- |
+    |  PEG ratio        10 pts  Growth At Reasonable Price (< 1 = cheap)     |
+    |  Earnings yield    5 pts  Inverse of PE (intrinsic cheapness)          |
+    +- Intrinsic Value (10 pts) ---------------------------------------------|
+    |  Graham MOS        7 pts  Price vs Graham Number margin of safety      |
+    |  Market cap        3 pts  Size / stability proxy                       |
+    +------------------------------------------------------------------------+
+    Max base = 100 pts   Bonus: dividend yield (+2) + 10Y profit growth (+2)
+    """
+    score = 0.0
+
+    # -- Quality block ---------------------------------------------------------
+
+    # ROCE (Return on Capital Employed)  -  15 pts
+    # Gate ensures ROCE ≥ 12%; scoring starts meaningfully at that floor.
+    # 12% → ~3.6 pts, 25% → 7.5 pts, 50% → 15 pts (full)
+    roce = rec.get("roce")
+    if roce is not None:
+        score += min(15.0, max(0.0, float(roce) * 0.30))
+    # missing ROCE: 0 pts (hard gate already required it if available)
+
+    # ROE consistency: prefer 10-year avg, fallback to current ROE  -  8 pts
+    # 12% → ~3.8 pts, 20% → 6.4 pts, 25% → 8 pts (full)
+    roe_ref = rec.get("roe_10y") or rec.get("roe_5y") or rec.get("roe")
+    if roe_ref is not None:
+        score += min(8.0, max(0.0, float(roe_ref) * 0.32))
+    # missing ROE: 0 pts
+
+    # Promoter holding  -  5 pts
+    ph = rec.get("promoter_holding")
+    if ph is not None:
+        ph = float(ph)
+        if ph >= 65:    score += 5.0
+        elif ph >= 55:  score += 4.0
+        elif ph >= 45:  score += 3.0
+        elif ph >= 35:  score += 2.0
+        elif ph >= 25:  score += 1.0
+    # missing promoter: 0 pts
+
+    # -- Debt & Liquidity block ------------------------------------------------
+
+    # Debt / Equity ratio  -  10 pts
+    # Gate ensures D/E ≤ 1.0; scoring rewards lower debt heavily.
+    # 0 (debt-free) = 10 pts, 0.25 = 9, 0.50 = 7.5, 0.75 = 6, 1.0 = 4.5
+    de = rec.get("debt_equity")
+    if de is not None:
+        de = float(de)
+        if de == 0.0:       score += 10.0   # truly debt-free
+        elif de <= 0.25:    score += 9.0    # very low debt
+        elif de <= 0.50:    score += 7.5    # low debt
+        elif de <= 0.75:    score += 6.0    # moderate
+        elif de <= 1.00:    score += 4.5    # at gate threshold
+        # > 1.0: 0 pts (gate rejects these)
+    # missing D/E: 0 pts — let ROCE/ROE carry the quality signal
+
+    # Current Ratio  -  5 pts  (>2 = healthy, <1 = risk)
+    cr = rec.get("current_ratio")
+    if cr is not None:
+        cr = float(cr)
+        if cr >= 2.5:    score += 5.0    # very liquid
+        elif cr >= 2.0:  score += 4.0
+        elif cr >= 1.5:  score += 3.0
+        elif cr >= 1.0:  score += 1.5    # just above water
+        # < 1.0: 0 pts
+    # missing CR: 0 pts
+
+    # -- Cash Flow block -------------------------------------------------------
+
+    # CFO Yield = Cash from Operations / Market Cap x 100  -  12 pts
+    cfo_y = rec.get("cfo_yield")
+    if cfo_y is not None:
+        cfo_y = float(cfo_y)
+        if cfo_y >= 10.0:   score += 12.0   # exceptional cash generation
+        elif cfo_y >= 6.0:  score += 10.0
+        elif cfo_y >= 4.0:  score += 8.0
+        elif cfo_y >= 2.0:  score += 6.0
+        elif cfo_y >= 0.5:  score += 3.0    # marginally positive
+        elif cfo_y >= 0.0:  score += 1.0    # breakeven
+        # < 0: 0 pts  -  cash-burning
+    # missing CFO: 0 pts
+
+    # -- Growth block ----------------------------------------------------------
+
+    # Revenue growth: composite of 3Y and 10Y CAGR  -  10 pts
+    # Gate ensures sg ≥ 5%; scoring starts meaningfully above that floor.
+    sg   = rec.get("sales_growth_pct") or rec.get("sales_growth_ttm")
+    sg10 = rec.get("sales_growth_10y")
+    if sg is not None and sg10 is not None:
+        sg_composite = (float(sg) * 0.6 + float(sg10) * 0.4)
+        score += min(10.0, max(0.0, sg_composite * 0.40))        # 25% avg = 10 pts
+    elif sg is not None:
+        score += min(8.0, max(0.0, float(sg) * 0.32))
+    elif sg10 is not None:
+        score += min(6.0, max(0.0, float(sg10) * 0.24))
+    # missing sales growth: 0 pts
+
+    # Profit growth 3Y  -  5 pts
+    # Gate ensures pg ≥ 8%; scoring rewards higher growth more.
+    pg = rec.get("profit_growth_3y") or rec.get("profit_growth_5y")
+    if pg is not None:
+        score += min(5.0, max(0.0, float(pg) * 0.20))           # 25% = 5 pts
+    # missing profit growth: 0 pts
+
+    # Institutional confidence (FII + DII)  -  5 pts
+    inst = rec.get("inst_holding")
+    if inst is not None:
+        if inst >= 30:    score += 5.0
+        elif inst >= 20:  score += 4.0
+        elif inst >= 10:  score += 3.0
+        elif inst >= 5:   score += 2.0
+        else:             score += 1.0
+    # missing inst: 0 pts
+
+    # -- Value block -----------------------------------------------------------
+
+    # PEG ratio  -  10 pts   (PEG < 1 = undervalued growth)
+    peg = rec.get("peg_ratio")
+    if peg is not None:
+        peg = float(peg)
+        if peg <= 0.5:    score += 10.0
+        elif peg <= 1.0:  score += 8.0
+        elif peg <= 1.5:  score += 5.5
+        elif peg <= 2.0:  score += 3.0
+        elif peg <= 3.0:  score += 1.0
+        # > 3.0: 0 pts
+    # missing PEG: 0 pts (PEG often unavailable; ROCE/ROE still rank quality)
+
+    # Earnings yield  -  5 pts
+    ey = rec.get("earnings_yield")
+    if ey is not None:
+        score += min(5.0, max(0.0, float(ey) * 0.33))   # 15% ey = 5 pts
+    # missing EY: 0 pts
+
+    # -- Intrinsic value block -------------------------------------------------
+
+    # Graham Margin of Safety  -  7 pts
+    mos = rec.get("graham_mos")
+    if mos is not None:
+        mos = float(mos)
+        if mos >= 60:     score += 7.0
+        elif mos >= 40:   score += 5.5
+        elif mos >= 25:   score += 4.0
+        elif mos >= 10:   score += 2.5
+        elif mos >= 0:    score += 1.0
+        elif mos >= -20:  score += 0.5
+    # missing MOS: 0 pts
+
+    # Market cap stability  -  3 pts
+    mc = float(rec.get("market_cap_cr") or 0)
+    if mc >= 1_00_000:  score += 3.0
+    elif mc >= 50_000:  score += 2.5
+    elif mc >= 20_000:  score += 2.0
+    elif mc >= 5_000:   score += 1.5
+    elif mc >= 1_000:   score += 1.0
+    else:               score += 0.5
+
+    # -- Bonus points ---------------------------------------------------------
+
+    # Dividend yield bonus (up to +2 pts)
+    dy = rec.get("dividend_yield")
+    if dy is not None and float(dy) > 0:
+        score += min(2.0, float(dy) * 0.5)   # 4% div = +2 pts
+
+    # Long-term profit growth bonus (10Y CAGR)
+    pg10 = rec.get("profit_growth_10y")
+    if pg10 is not None and float(pg10) > 0:
+        score += min(2.0, float(pg10) * 0.08)  # 25% 10Y CAGR = +2 pts
+
+    return round(min(100.0, max(0.0, score)), 2)
+
+
+@app.get("/api/fundamentals")
+async def get_fundamentals(refresh: int = 0) -> JSONResponse:
+    """
+    Top 30 stocks by strict fundamental quality from ALL Nifty500 + Microcap250 tickers.
+
+    Hard gates (applied before scoring):
+      ROCE ≥ 12%   ROE ≥ 12%   D/E ≤ 1.0   ProfitGrowth3Y ≥ 8%   SalesGrowth ≥ 5%
+      CashFromOperations > 0  (positive operating cash flow — real earnings quality)
+
+    Uses a disk cache (cache/fundamentals_data.json) that persists across restarts.
+    Stale/missing entries are refreshed in background — returns instantly from cache.
+    Pass ?refresh=1 to force an immediate background refresh.
+    """
+    global _fund_bg_running
+
+    all_tickers: list = list(dict.fromkeys(NIFTY500_TICKERS + NIFTY_MICROCAP250_TICKERS))
+    now = time.time()
+
+    # If ?refresh=1  -  clear TTL timestamps so BG worker will re-fetch
+    if refresh:
+        for t in all_tickers:
+            if t in _fund_data:
+                _fund_data[t]["_ts"] = 0.0
+
+    # Map scan results by ticker (provides tech score, fresh D/E, market_cap)
+    scan_map: dict = {}
+    for s in list(scan_state.get("data") or []) + list(mc_scan_state.get("data") or []):
+        key = (s.get("ticker") or s.get("display_ticker", "")).upper()
+        if key:
+            scan_map[key] = s
+
+    # Build combined record for every ticker that has at least some cached data
+    combined = []
+    for ticker in all_tickers:
+        key        = ticker.upper()
+        cache_rec  = _fund_data.get(key) or _fund_data.get(ticker) or {}
+        scan_rec   = scan_map.get(key, {})
+
+        # Skip tickers with zero data in both sources
+        if not cache_rec and not scan_rec:
+            continue
+
+        rec: dict = {
+            "ticker":         ticker,
+            "display_ticker": key.replace(".NS", "").replace(".BO", ""),
+        }
+
+        # Pull ALL cached fundamentals into the record
+        for k in ("sector", "debt_equity", "market_cap_cr", "current_price",
+                  "roce", "roe", "roe_5y", "roe_10y",
+                  "promoter_holding", "fii_holding", "dii_holding", "inst_holding",
+                  "sales_growth_pct", "sales_growth_5y", "sales_growth_10y",
+                  "profit_growth_3y", "profit_growth_5y", "profit_growth_10y",
+                  "pe_ratio", "peg_ratio", "earnings_yield",
+                  "book_value", "pb_ratio", "dividend_yield",
+                  "graham_number", "graham_mos", "sales_growth_avg",
+                  "current_ratio", "cash_from_operations", "cfo_yield"):  # NEW
+            v = cache_rec.get(k)
+            if v is not None:
+                rec[k] = v
+
+        # Scan results override with fresher values + add technical score
+        for k in ("sector", "debt_equity", "market_cap_cr", "score",
+                  "rsi", "return_20d", "rs_outperf_pct", "price"):
+            v = scan_rec.get(k)
+            if v is not None:
+                rec[k] = v
+        if scan_rec.get("display_ticker"):
+            rec["display_ticker"] = scan_rec["display_ticker"]
+
+        # Sync current_price from scan result if not in cache
+        if "price" in rec and "current_price" not in rec:
+            rec["current_price"] = rec["price"]
+
+        rec["fund_score"] = _fund_quality_score(rec)
+        combined.append(rec)
+
+    # Apply hard fundamental quality gates — only genuinely strong stocks pass
+    qualified = [r for r in combined if _passes_fund_gates(r)]
+    qualified.sort(key=lambda x: x["fund_score"], reverse=True)
+    top30 = qualified[:30]
+    for i, s in enumerate(top30, 1):
+        s["fund_rank"] = i
+
+    logger.info("Fundamentals: %d total records, %d passed quality gates, showing top %d",
+                len(combined), len(qualified), len(top30))
+
+    # Count stale entries and trigger background refresh if not already running
+    stale = [t for t in all_tickers
+             if now - _fund_data.get(t, {}).get("_ts", 0) > _FUND_CACHE_TTL]
+    if stale and not _fund_bg_running:
+        _fund_bg_running = True
+        _fund_cancel.clear()   # allow this worker to run (user is on fund tab)
+        priority_first = sorted(stale, key=lambda t: 0 if t.upper() in scan_map else 1)
+
+        async def _bg_task(tickers=priority_first):
+            global _fund_bg_running
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _fund_bg_worker, tickers)
+            except Exception:
+                _fund_bg_running = False
+        asyncio.create_task(_bg_task())
+
+    cache_fresh = len(all_tickers) - len(stale)
+    return JSONResponse({
+        "stocks":             top30,
+        "all_stocks":         qualified,
+        "total":              len(qualified),
+        "total_scored":       len(combined),
+        "status":             "complete" if qualified else "no_data",
+        "cache_fresh":        cache_fresh,
+        "cache_total":        len(all_tickers),
+        "bg_running":         _fund_bg_running,
+        "stale_count":        len(stale),
+        "last_updated_n500":  scan_state.get("last_updated"),
+        "last_updated_mc250": mc_scan_state.get("last_updated"),
+        "gates": {
+            "roce_min":         _FUND_ROCE_MIN,
+            "roe_min":          _FUND_ROE_MIN,
+            "de_max":           _FUND_DE_MAX,
+            "profit_growth_min":_FUND_PROFIT_GROW_MIN,
+            "sales_growth_min": _FUND_SALES_GROW_MIN,
+            "cfo_positive":     _FUND_CFO_POSITIVE,
+        },
+    })
+
+
+# -- SME Fundamentals ---------------------------------------------------------
+# Tracks NSE Emerge + BSE SME stocks, same quality scoring as main fund tab,
+# with an extra "exchange" field ("NSE Emerge" | "BSE SME") per record.
+
+_SME_FUND_CACHE_FILE = _PL("cache/sme_fundamentals_data.json")
+_sme_fund_data: dict  = {}           # {ticker: {exchange, fund_score, ...}}
+_sme_bg_running: bool = False
+_sme_universe: dict   = {}           # {ticker: "NSE Emerge" | "BSE SME"}  -  built at startup
+
+
+def _sme_cache_load() -> None:
+    global _sme_fund_data
+    try:
+        if _SME_FUND_CACHE_FILE.exists():
+            _sme_fund_data = json.loads(_SME_FUND_CACHE_FILE.read_text(encoding="utf-8"))
+            invalidated = 0
+            for entry in _sme_fund_data.values():
+                if isinstance(entry, dict) and entry.get("_ts", 0) > 0:
+                    if "roce" not in entry or not any(k in entry for k in
+                                                      ("cash_from_operations", "cfo_yield")):
+                        entry["_ts"] = 0
+                        invalidated += 1
+            logger.info("SME fund cache loaded: %d entries (%d invalidated)", len(_sme_fund_data), invalidated)
+        else:
+            _sme_fund_data = {}
+    except Exception as exc:
+        logger.warning("Could not load SME fund cache: %s", exc)
+        _sme_fund_data = {}
+
+
+def _sme_cache_save() -> None:
+    try:
+        _SME_FUND_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SME_FUND_CACHE_FILE.write_text(
+            json.dumps(_sme_fund_data, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception as exc:
+        logger.warning("SME fund cache save failed: %s", exc)
+
+
+def _sme_fund_refresh_ticker(ticker: str) -> tuple:
+    """Fetch & cache fundamentals for one SME ticker.
+
+    Uses SME-aware Screener.in scraping: tries regular URL first, then
+    the '-SME' suffix URL used by NSE Emerge stocks
+    (e.g. screener.in/company/TICKER-SME/).
+
+    Returns (result, content_changed) same as _fund_refresh_ticker().
+    Results are stored in the shared _fund_data cache.
+    """
+    from data_sources import fundamentals as _fc
+    import math
+
+    result: dict = {}
+    try:
+        sector, de_x100, mc_inr = _fc.get(ticker)
+        if sector:
+            result["sector"] = sector
+        if de_x100 is not None:
+            result["debt_equity"]   = round(float(de_x100) / 100, 2)
+        if mc_inr is not None:
+            result["market_cap_cr"] = round(float(mc_inr) / 1e7, 0)
+    except Exception:
+        pass
+
+    try:
+        # Use SME-aware scraper (also tries TICKER-SME URL variant)
+        extra = _fc.get_extra_sme_fundamentals(ticker)
+        for k in ("roce", "roe", "roe_5y", "roe_10y",
+                  "promoter_holding", "fii_holding", "dii_holding",
+                  "sales_growth_pct", "sales_growth_5y", "sales_growth_10y",
+                  "profit_growth_3y", "profit_growth_5y", "profit_growth_10y",
+                  "sales_growth_ttm", "profit_growth_ttm",
+                  "pe_ratio", "book_value", "dividend_yield",
+                  "debt_equity", "market_cap_cr", "current_price",
+                  "current_ratio", "cash_from_operations"):
+            if k in extra and extra[k] is not None:
+                result[k] = extra[k]
+    except Exception:
+        pass
+
+    # Derived metrics (same as _fund_refresh_ticker)
+    pe   = result.get("pe_ratio")
+    bv   = result.get("book_value")
+    cp   = result.get("current_price")
+    pg3  = result.get("profit_growth_3y")
+    pg5  = result.get("profit_growth_5y")
+    mc   = result.get("market_cap_cr")
+    cfo  = result.get("cash_from_operations")
+
+    growth_for_peg = pg3 if (pg3 is not None and pg3 > 0) else (pg5 if pg5 and pg5 > 0 else None)
+    if pe and pe > 0 and growth_for_peg and growth_for_peg > 0:
+        result["peg_ratio"] = round(pe / growth_for_peg, 2)
+
+    if pe and pe > 0:
+        result["earnings_yield"] = round(100.0 / pe, 2)
+
+    if cp and bv and bv > 0:
+        result["pb_ratio"] = round(cp / bv, 2)
+
+    eps = (cp / pe) if (cp and pe and pe > 0) else None
+    if eps and bv and bv > 0:
+        try:
+            gn = math.sqrt(22.5 * abs(eps) * abs(bv))
+            result["graham_number"] = round(gn, 2)
+            if cp and cp > 0:
+                result["graham_mos"] = round((gn - cp) / cp * 100, 1)
+        except Exception:
+            pass
+
+    if mc and cfo is not None:
+        mc_inr2 = mc * 1e7
+        if mc_inr2 > 0:
+            result["cfo_yield"] = round(cfo * 1e7 / mc_inr2 * 100, 2)
+
+    sg3  = result.get("sales_growth_pct")
+    sg10 = result.get("sales_growth_10y")
+    if sg3 is not None and sg10 is not None:
+        result["sales_growth_avg"] = round((sg3 + sg10) / 2, 1)
+    elif sg3 is not None:
+        result["sales_growth_avg"] = sg3
+
+    fii = result.get("fii_holding")
+    dii = result.get("dii_holding")
+    if fii is not None and dii is not None:
+        result["inst_holding"] = round(fii + dii, 2)
+
+    # Content-change detection (exclude _ts)
+    existing = _fund_data.get(ticker, {})
+    content_changed = False
+    for k, v in result.items():
+        if existing.get(k) != v:
+            content_changed = True
+            break
+    if not content_changed:
+        for k in existing:
+            if k == "_ts":
+                continue
+            if k not in result:
+                content_changed = True
+                break
+
+    result["_ts"] = time.time()
+    _fund_data[ticker] = result
+    return result, content_changed
+
+
+def _sme_bg_worker(tickers: list, batch: int = 60) -> None:
+    """Background refresh for SME fundamentals.
+
+    Uses SME-aware fetching (_sme_fund_refresh_ticker) which additionally
+    tries the '-SME' URL variant on screener.in for NSE Emerge stocks.
+    Saves to disk only when field values actually changed.
+    One final save is always written at the end to persist updated _ts values.
+    """
+    global _sme_bg_running
+    stale = [t for t in tickers if
+             time.time() - _fund_data.get(t, {}).get("_ts", 0) > _FUND_CACHE_TTL]
+
+    if not stale:
+        logger.info("SME BG worker: all %d tickers fresh  -  nothing to download", len(tickers))
+        _sme_bg_running = False
+        return
+
+    logger.info("SME BG worker: %d stale / %d total tickers", len(stale), len(tickers))
+    total_refreshed = 0
+    total_changed   = 0
+
+    for i in range(0, len(stale), batch):
+        # Check cancellation before every batch
+        if _sme_cancel.is_set():
+            logger.info("SME BG worker: cancelled after %d/%d tickers (tab switched)",
+                        total_refreshed, len(stale))
+            _fund_cache_save()
+            _sme_bg_running = False
+            return
+
+        chunk = stale[i: i + batch]
+        fetched_in_chunk  = 0
+        changed_in_chunk  = 0
+        for ticker in chunk:
+            if _sme_cancel.is_set():
+                logger.info("SME BG worker: cancelled mid-batch at ticker %s", ticker)
+                break
+            try:
+                result, changed = _sme_fund_refresh_ticker(ticker)   # SME-aware scraper
+                if any(k in result for k in ("roce", "roe", "promoter_holding")):
+                    fetched_in_chunk += 1
+                if changed:
+                    changed_in_chunk += 1
+            except Exception as exc:
+                logger.debug("SME BG refresh error %s: %s", ticker, exc)
+
+        total_refreshed += fetched_in_chunk
+        total_changed   += changed_in_chunk
+
+        if changed_in_chunk:
+            _fund_cache_save()   # SME data lives in shared _fund_data cache
+            logger.info("SME BG: batch %d/%d  -  %d fetched, %d changed -> saved",
+                        min(i + batch, len(stale)), len(stale),
+                        fetched_in_chunk, changed_in_chunk)
+        else:
+            logger.info("SME BG: batch %d/%d  -  %d fetched, no content changes (skipped save)",
+                        min(i + batch, len(stale)), len(stale), fetched_in_chunk)
+
+    # Final save to persist refreshed _ts values
+    _fund_cache_save()
+    logger.info("SME BG worker done: %d fetched, %d content-changed, final save written",
+                total_refreshed, total_changed)
+    _sme_bg_running = False
+
+
+# -- Stock Momentum ------------------------------------------------------------
+# Momentum filter thresholds are now defined in scanner.py (MOM_*) and imported
+# at the top of this file.  Aliases kept here for the criteria payload / logging.
+_MOM_RSI_MIN   = MOM_RSI_MIN
+_MOM_WRSI_MIN  = MOM_WRSI_MIN
+_MOM_ADX_MIN   = MOM_ADX_MIN
+_MOM_VOLZ_MIN  = MOM_VOLZ_MIN
+_MOM_RS_MIN    = MOM_RS_MIN
+_MOM_RET20_MIN = MOM_RET20_MIN
+_MOM_RET5_MIN  = MOM_RET5_MIN
+_MOM_TVMIN_CR  = MOM_TV_MIN_CR
+
+
+def _mom_score(s: dict) -> float:
+    """Pure Momentum Score  -  technicals only.  Max = 100 pts.
+
+    Weights are tuned for better winning-rate predictability:
+
+    RSI zone         (0 - 30)  -  primary momentum; RSI 50->80 linear
+                                   (reduced from 35: extreme RSI>80 = overbought risk)
+    RS outperformance(0 - 25)  -  #1 win-rate predictor — market leaders continue leading
+    ADX strength     (0 - 20)  -  directional trend conviction; ADX 20->55 linear
+    MACD histogram   (0 - 10)  -  momentum acceleration / confirmation
+    Weekly RSI       (0 - 10)  -  higher-timeframe trend alignment; wRSI 50->70 linear
+    Volume surge     (0 -  5)  -  institutional activity / confirmation only
+    ─────────────────────────
+    TOTAL MAX                100 pts
+    """
+    rsi   = float(s.get("rsi")           or 0)
+    wrsi  = float(s.get("weekly_rsi")    or 0)
+    adx   = float(s.get("adx")           or 0)
+    vz    = float(s.get("vol_zscore")    or 0)
+    rs    = float(s.get("rs_outperf_pct")or 0)
+    mhist = float(s.get("macd_hist")     or 0)
+
+    rsi_pts   = min(30.0, max(0.0, (rsi  - 50.0) * 1.0))      # RSI  50->80 -> 0->30
+    wrsi_pts  = min(10.0, max(0.0, (wrsi - 50.0) * 0.5))      # wRSI 50->70 -> 0->10
+    adx_pts   = min(20.0, max(0.0, (adx  - 20.0) * 0.571))    # ADX  20->55 -> 0->20
+    rs_pts    = min(25.0, max(0.0, rs   * 2.5))                # RS   0->10% -> 0->25
+    vol_pts   = min( 5.0, max(0.0, (vz  - 0.5)  * 2.5))       # volZ 0.5->2.5 -> 0->5
+    macd_pts  = min(10.0, max(0.0, mhist * 200.0))             # hist 0->0.05 -> 0->10
+
+    return round(rsi_pts + wrsi_pts + adx_pts + rs_pts + vol_pts + macd_pts, 2)
+
+
+@app.get("/api/stock-momentum")
+async def get_stock_momentum(
+    date: str = Query(None, description="Historical date YYYY-MM-DD; omit for live data"),
+) -> JSONResponse:
+    """
+    High-momentum subset of the N500 + MC250 universe.
+
+    **Completely independent of Swing Trade.**  Uses a dedicated
+    momentum-only scan (scanner.scan(momentum_only=True)) that applies
+    only the 6 momentum criteria — no fundamentals, no EMA cross, no
+    HH20 breakout, no closing range, no sector outperformance, no
+    composite scoring.
+
+    Pass ?date=YYYY-MM-DD for historical results.
+
+    Filters (all must pass):
+      RSI-14  >= 60    (strong momentum zone)
+      Weekly RSI >= 55 (weekly trend confirmation)
+      ADX-14  >= 22    (directional trend established)
+      Vol Z-score >= 0.5 (above-average volume)
+      RS outperf >= 1.5% vs index (market leadership)
+      20D return >= 1.5% absolute (positive drift)
+    """
+    target_date = None
+    if date:
+        target_date, err = _validate_date_param(date)
+        if err:
+            return err
+
+    if target_date:
+        # Historical mode: run momentum-only scans for the requested date
+        try:
+            loop = asyncio.get_event_loop()
+            await asyncio.gather(
+                loop.run_in_executor(
+                    None, lambda: scanner.scan(target_date=target_date, momentum_only=True)
+                ),
+                loop.run_in_executor(
+                    None, lambda: scanner_mc.scan(target_date=target_date, momentum_only=True)
+                ),
+            )
+        except Exception as exc:
+            logger.error("Historical stock-momentum scan failed: %s", exc, exc_info=True)
+            return JSONResponse({"error": str(exc), "stocks": [], "total": 0}, status_code=500)
+        n500_stocks  = [dict(s, from_index="Nifty 500")    for s in (scanner.last_momentum_results    or [])]
+        mc_stocks    = [dict(s, from_index="Microcap 250") for s in (scanner_mc.last_momentum_results or [])]
+        n500_status  = "complete"
+        mc250_status = "complete"
+        overall_status = "complete"
+        last_n500  = f"Historical data as of {date}"
+        last_mc250 = f"Historical data as of {date}"
+    else:
+        # Live mode: read from the dedicated independent momentum scan state
+        n500_stocks  = [dict(s, from_index="Nifty 500")    for s in (mom_scan_state.get("data")    or [])]
+        mc_stocks    = [dict(s, from_index="Microcap 250") for s in (mc_mom_scan_state.get("data") or [])]
+        n500_status  = mom_scan_state["status"]
+        mc250_status = mc_mom_scan_state["status"]
+        overall_status = (
+            "scanning"     if n500_status in ("scanning", "initializing")
+                              or mc250_status in ("scanning", "initializing") else
+            "complete"     if (n500_status == "complete" or mc250_status == "complete") else
+            "error"
+        )
+        last_n500  = mom_scan_state.get("last_updated")
+        last_mc250 = mc_mom_scan_state.get("last_updated")
+
+    all_stocks = n500_stocks + mc_stocks
+
+    if all_stocks:
+        logger.info(
+            "Stock Momentum: %d stocks qualified "
+            "(N500=%d, MC250=%d) — applying mom_score ranking",
+            len(all_stocks),
+            sum(1 for s in all_stocks if s.get("from_index") == "Nifty 500"),
+            sum(1 for s in all_stocks if s.get("from_index") == "Microcap 250"),
+        )
+    else:
+        logger.info(
+            "Stock Momentum: no qualifying stocks yet "
+            "(n500_status=%s, mc250_status=%s)",
+            n500_status, mc250_status,
+        )
+        # Kick dedicated momentum scans on very first start (status == "initializing")
+        # Guard uses "not in scanning" so a queued-but-not-yet-started task
+        # (status already set to "scanning") is never duplicated.
+        if not target_date:
+            if n500_status not in ("scanning", "complete"):
+                logger.info("Stock Momentum: kicking N500 momentum-only scan")
+                asyncio.create_task(run_n500_momentum_scan())
+            if mc250_status not in ("scanning", "complete"):
+                logger.info("Stock Momentum: kicking MC250 momentum-only scan")
+                asyncio.create_task(run_mc250_momentum_scan())
+
+    # Compute momentum score and sort
+    for s in all_stocks:
+        s["mom_score"] = _mom_score(s)
+    all_stocks.sort(key=lambda x: x["mom_score"], reverse=True)
+    filtered = all_stocks
+
+    n500_count = sum(1 for s in filtered if s.get("from_index") == "Nifty 500")
+    mc_count   = sum(1 for s in filtered if s.get("from_index") == "Microcap 250")
+
+    return JSONResponse({
+        "stocks":               filtered[:50],
+        "total":                len(filtered),
+        "n500_count":           n500_count,
+        "mc_count":             mc_count,
+        "n500_status":          n500_status,
+        "mc250_status":         mc250_status,
+        "last_updated_n500":    last_n500,
+        "last_updated_mc250":   last_mc250,
+        "status":               overall_status,
+        "scan_stage":           mom_scan_state.get("scan_stage", "") if not target_date else "",
+        "as_of_date":           date if target_date else None,
+        "criteria": {
+            "rsi_min":    _MOM_RSI_MIN,
+            "wrsi_min":   _MOM_WRSI_MIN,
+            "adx_min":    _MOM_ADX_MIN,
+            "volz_min":   _MOM_VOLZ_MIN,
+            "rs_min":     _MOM_RS_MIN,
+            "ret20_min":  _MOM_RET20_MIN,
+            "ret5_min":   _MOM_RET5_MIN,
+            "tv_min_cr":  _MOM_TVMIN_CR,
+            "macd":       "MACD(12,26,9) > Signal AND MACD > 0",
+        },
+    })
+
+
+@app.get("/api/morning-momentum")
+async def get_morning_momentum(
+    date: str = Query(None, description="Historical date YYYY-MM-DD; omit for live data"),
+) -> JSONResponse:
+    """
+    Morning Momentum — checks ALL 750 tickers (N500 + MC250) for the 3-candle
+    Morning Star bullish-reversal candlestick pattern.
+
+    No momentum/swing criteria required — every ticker is tested.
+    Historical date support uses cache-first with incremental (delta) downloads
+    so date changes in the UI are fast after the initial cache warm-up.
+    """
+    target_date = None
+    if date:
+        target_date, err = _validate_date_param(date)
+        if err:
+            return err
+
+    if target_date:
+        # Historical mode: cache-first morning-star scan for the requested date
+        try:
+            loop = asyncio.get_event_loop()
+            n500_results, mc_results = await asyncio.gather(
+                loop.run_in_executor(
+                    None, lambda: scanner.scan_morning_star(target_date=target_date)
+                ),
+                loop.run_in_executor(
+                    None, lambda: scanner_mc.scan_morning_star(target_date=target_date)
+                ),
+            )
+        except Exception as exc:
+            logger.error("Historical morning-momentum scan failed: %s", exc, exc_info=True)
+            return JSONResponse({"error": str(exc), "stocks": [], "total": 0}, status_code=500)
+        n500_all     = [dict(s, from_index="Nifty 500")    for s in (n500_results or [])]
+        mc_all       = [dict(s, from_index="Microcap 250") for s in (mc_results   or [])]
+        n500_status  = "complete"
+        mc250_status = "complete"
+        overall_status = "complete"
+        last_n500    = f"Historical data as of {date}"
+        last_mc250   = f"Historical data as of {date}"
+        scan_stage   = ""
+    else:
+        # Live mode: read from dedicated Morning Star scan state
+        n500_all     = [dict(s, from_index="Nifty 500")    for s in (ms_scan_state.get("data")    or [])]
+        mc_all       = [dict(s, from_index="Microcap 250") for s in (mc_ms_scan_state.get("data") or [])]
+        n500_status  = ms_scan_state["status"]
+        mc250_status = mc_ms_scan_state["status"]
+        overall_status = (
+            "scanning"  if n500_status in ("scanning", "initializing")
+                           or mc250_status in ("scanning", "initializing") else
+            "complete"  if (n500_status == "complete" or mc250_status == "complete") else
+            "error"
+        )
+        last_n500  = ms_scan_state.get("last_updated")
+        last_mc250 = mc_ms_scan_state.get("last_updated")
+        scan_stage = (
+            ms_scan_state.get("scan_stage", "") or mc_ms_scan_state.get("scan_stage", "")
+        )
+
+        # Kick Morning Star scans on very first visit (status still "initializing")
+        if not n500_all and not mc_all:
+            if n500_status not in ("scanning", "complete"):
+                asyncio.create_task(run_n500_ms_scan())
+            if mc250_status not in ("scanning", "complete"):
+                asyncio.create_task(run_mc250_ms_scan())
+
+    all_stocks = n500_all + mc_all
+
+    # Sort by Morning Star score desc (best candidates first), then 20D return as tiebreaker
+    all_stocks.sort(key=lambda x: (x.get("mom_score") or 0, x.get("return_20d") or 0), reverse=True)
+
+    n500_count = sum(1 for s in all_stocks if s.get("from_index") == "Nifty 500")
+    mc_count   = sum(1 for s in all_stocks if s.get("from_index") == "Microcap 250")
+
+    logger.info(
+        "Morning Momentum: %d Morning Star stocks (N500=%d, MC250=%d)",
+        len(all_stocks), n500_count, mc_count,
+    )
+
+    return JSONResponse({
+        "stocks":               all_stocks[:100],
+        "total":                len(all_stocks),
+        "n500_count":           n500_count,
+        "mc_count":             mc_count,
+        "n500_status":          n500_status,
+        "mc250_status":         mc250_status,
+        "last_updated_n500":    last_n500,
+        "last_updated_mc250":   last_mc250,
+        "status":               overall_status,
+        "scan_stage":           scan_stage,
+        "as_of_date":           date if target_date else None,
+    })
+
+
+@app.get("/api/sme/fundamentals")
+async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
+    """
+    Top SME stocks ranked by fundamental quality.
+    Universe: NSE Emerge + BSE SME IPO tickers.
+    Each result includes an 'exchange' field: 'NSE Emerge' or 'BSE SME'.
+    """
+    global _sme_bg_running, _sme_universe
+
+    # Build universe on first call (cached in module-level dict after that)
+    if not _sme_universe:
+        from sme_tickers import build_sme_universe
+        _sme_universe = build_sme_universe()
+
+    all_tickers = list(_sme_universe.keys())
+    now = time.time()
+
+    if refresh:
+        for t in all_tickers:
+            if t in _sme_fund_data:
+                _sme_fund_data[t]["_ts"] = 0.0
+        # Also refresh data stored in main _fund_data (shared fetcher)
+        for t in all_tickers:
+            if t in _fund_data:
+                _fund_data[t]["_ts"] = 0.0
+
+    combined = []
+    for ticker in all_tickers:
+        key       = ticker.upper()
+        # Pull from shared _fund_data cache (same fetcher as main fund tab)
+        cache_rec = _fund_data.get(key) or _fund_data.get(ticker) or {}
+
+        if not cache_rec:
+            continue
+
+        rec: dict = {
+            "ticker":         ticker,
+            "display_ticker": key.replace(".NS", "").replace(".BO", ""),
+            "exchange":       _sme_universe.get(ticker, "NSE Emerge"),
+        }
+
+        for k in ("sector", "debt_equity", "market_cap_cr", "current_price",
+                  "roce", "roe", "roe_5y", "roe_10y",
+                  "promoter_holding", "fii_holding", "dii_holding", "inst_holding",
+                  "sales_growth_pct", "sales_growth_5y", "sales_growth_10y",
+                  "profit_growth_3y", "profit_growth_5y", "profit_growth_10y",
+                  "pe_ratio", "peg_ratio", "earnings_yield",
+                  "book_value", "pb_ratio", "dividend_yield",
+                  "graham_number", "graham_mos", "sales_growth_avg",
+                  "current_ratio", "cash_from_operations", "cfo_yield"):
+            v = cache_rec.get(k)
+            if v is not None:
+                rec[k] = v
+
+        if "current_price" not in rec and rec.get("price"):
+            rec["current_price"] = rec["price"]
+
+        rec["fund_score"] = _fund_quality_score(rec)
+        combined.append(rec)
+
+    combined.sort(key=lambda x: x["fund_score"], reverse=True)
+    top30 = combined[:30]
+    for i, s in enumerate(top30, 1):
+        s["sme_rank"] = i
+
+    # Kick background refresh for stale SME tickers (shared _fund_data cache)
+    stale = [t for t in all_tickers
+             if now - _fund_data.get(t, {}).get("_ts", 0) > _FUND_CACHE_TTL]
+    if stale and not _sme_bg_running:
+        _sme_bg_running = True
+        _sme_cancel.clear()   # allow this worker to run (user is on sme tab)
+
+        async def _sme_bg_task(tickers=stale):
+            global _sme_bg_running
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _sme_bg_worker, tickers)
+            except Exception:
+                _sme_bg_running = False
+        asyncio.create_task(_sme_bg_task())
+
+    cache_fresh = len(all_tickers) - len(stale)
+    nse_count = sum(1 for v in _sme_universe.values() if v == "NSE Emerge")
+    bse_count = sum(1 for v in _sme_universe.values() if v == "BSE SME")
+
+    return JSONResponse({
+        "stocks":       top30,
+        "all_stocks":   combined,
+        "total":        len(combined),
+        "status":       "complete" if combined else "no_data",
+        "cache_fresh":  cache_fresh,
+        "cache_total":  len(all_tickers),
+        "bg_running":   _sme_bg_running,
+        "stale_count":  len(stale),
+        "nse_count":    nse_count,
+        "bse_count":    bse_count,
+    })
+
+
+
 async def get_sectors() -> JSONResponse:
     """Top sectors derived from Nifty500 + Microcap250 scan results."""
     from collections import defaultdict
@@ -725,7 +2344,7 @@ async def mc_historical_snapshot(
         return JSONResponse({"error": str(exc), "status": "error"}, status_code=500)
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# -- Entry point ---------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

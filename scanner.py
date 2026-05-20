@@ -67,7 +67,7 @@ try:
 except Exception:
     pass
 
-import re, time, logging, datetime as dt_mod, threading
+import io, re, time, logging, datetime as dt_mod, threading, contextlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -77,6 +77,14 @@ import yfinance as yf
 import pandas_ta  # noqa -- registers df.ta accessor
 # Silence pandas_ta log output (does not affect calculation correctness)
 logging.getLogger("pandas_ta").setLevel(logging.CRITICAL)
+
+# pandas_ta uses direct print() calls internally (not the logging module).
+# Redirect stdout during every df.ta.* call so those Series reprs never
+# appear on the console.
+@contextlib.contextmanager
+def _suppress_ta_stdout():
+    with contextlib.redirect_stdout(io.StringIO()):
+        yield
 
 from tickers import NIFTY500_TICKERS
 from config import (
@@ -116,6 +124,28 @@ from data_sources import (
 import cache as _cache               # local OHLCV disk cache
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Momentum-only scan thresholds
+# Defined here (not in config) so _analyze_momentum() can use them without
+# circular imports.  main.py imports these directly to stay in sync.
+# ---------------------------------------------------------------------------
+MOM_RSI_MIN   = 62.0   # RSI-14 — strong daily momentum zone
+MOM_WRSI_MIN  = 60.0   # Weekly RSI-14 — broader trend confirmation (was 55)
+MOM_ADX_MIN   = 25.0   # ADX — proper trend established (was 22; <25 = no trend)
+MOM_VOLZ_MIN  = 0.8    # Volume Z-score — clearly above-average activity (was 0.5)
+MOM_RS_MIN    = 3.0    # RS outperformance vs benchmark (%) — clear leader (was 1.5)
+MOM_RET20_MIN = 5.0    # 20-day absolute return floor (%) — no weak movers (was 1.5)
+MOM_RET5_MIN  = 0.0    # 5-day return must be non-negative (not losing last week)
+MOM_TV_MIN_CR = 2.0    # Min avg daily traded value (Crores) — decent liquidity (was 0.6)
+
+# ---------------------------------------------------------------------------
+# Morning Star quality filter thresholds (scan_morning_star only)
+# ---------------------------------------------------------------------------
+MS_TV_MIN_CR      = 3.0   # Min avg daily traded value in Crores (liquidity gate)
+MS_PRIOR_DROP_PCT = 3.0   # Pre-pattern decline: trough in last 6 bars must be at
+                           #   least 3% below the close ~10 bars before the pattern
+MS_VOL_CONFIRM_X  = 1.0   # Day-3 reversal area volume >= 100% of 20D avg volume
 
 # ---------------------------------------------------------------------------
 # Shared yfinance session -- verify=False so corporate-proxy self-signed certs
@@ -407,8 +437,12 @@ class StockScanner:
         self._yf                      = _YahooClient()
         self._bse                     = _BSEBhavcopy()
         # Regime state exposed to main.py after each scan()
-        self.last_regime_ok      = True
-        self.last_regime_summary = ""
+        self.last_regime_ok           = True
+        self.last_regime_summary      = ""
+        # Momentum-only results exposed to main.py after each scan()
+        # Contains stocks that passed only the 6 momentum criteria, independent
+        # of the strict Swing Trade filters (EMA cross, breakout, fundamentals, etc.)
+        self.last_momentum_results: list = []
 
     # -- Data quality checker ------------------------------------------------
 
@@ -858,9 +892,10 @@ class StockScanner:
 
         # ---- ATR via pandas_ta ---------------------------------------------
         try:
-            atr5_s  = df.ta.atr(length=5,  append=False)
-            atr14_s = df.ta.atr(length=14, append=False)
-            atr20_s = df.ta.atr(length=20, append=False)
+            with _suppress_ta_stdout():
+                atr5_s  = df.ta.atr(length=5,  append=False)
+                atr14_s = df.ta.atr(length=14, append=False)
+                atr20_s = df.ta.atr(length=20, append=False)
         except Exception as exc:
             logger.debug("%-12s SKIP  ATR error: %s", sym, exc)
             return None
@@ -888,9 +923,17 @@ class StockScanner:
         e20     = float(ema20_s.iloc[-1])
         e50     = float(ema50_s.iloc[-1])
 
-        # Filter 5: 20 EMA > 50 EMA
+        # Filter 5: 20 EMA > 50 EMA  (daily trend aligned)
         if pd.isna(e20) or pd.isna(e50) or e20 <= e50:
             logger.debug("%-12s SKIP  20EMA %.2f <= 50EMA %.2f", sym, e20, e50)
+            return None
+
+        # Filter 5b: Close > 20 EMA  (price must be ABOVE its short-term average)
+        # Without this, a stock with EMA20 > EMA50 but price below EMA20 passes —
+        # that is a stock in a pullback, not in confirmed momentum. We want price
+        # already trading above the average, showing buyer conviction.
+        if cp <= e20:
+            logger.debug("%-12s SKIP  close %.2f <= EMA20 %.2f (below average)", sym, cp, e20)
             return None
 
         # ---- Traded value --------------------------------------------------
@@ -1067,7 +1110,8 @@ class StockScanner:
         # This allows early breakout entries where ADX is still rising from low levels
         # (trend is starting) rather than requiring an "established" trend (ADX > 20).
         try:
-            adx_res = df.ta.adx(length=ADX_PERIOD, append=False)
+            with _suppress_ta_stdout():
+                adx_res = df.ta.adx(length=ADX_PERIOD, append=False)
         except Exception as exc:
             logger.debug("%-12s SKIP  ADX error: %s", sym, exc)
             return None
@@ -1100,11 +1144,20 @@ class StockScanner:
         rs_ratio  = (1 + stock_ret) / (1 + index_ret)
         rs_outperf = stock_ret - index_ret   # decimal
 
-        # Filter 18: stock_ret - index_ret > 0.03
+        # Filter 18: stock_ret - index_ret > MOMENTUM_OUTPERFORM_MIN
         if rs_outperf <= MOMENTUM_OUTPERFORM_MIN:
             logger.debug("%-12s SKIP  RS outperf %.4f <= %.2f",
                          sym, rs_outperf, MOMENTUM_OUTPERFORM_MIN)
             return None
+
+        # Filter 19: 5-day return must be non-negative (not losing last week)
+        # A stock with strong 20D return but a negative 5D return is already
+        # rolling over — the momentum is stalling or reversing near-term.
+        if len(c) >= 6:
+            r5d = float(c.iloc[-1] / c.iloc[-6] - 1) * 100
+            if r5d < 0.0:
+                logger.debug("%-12s SKIP  5D return %.2f%% < 0 (rolling over)", sym, r5d)
+                return None
 
         # ---- Returns -------------------------------------------------------
         r1m = round(stock_ret * 100, 2)
@@ -1155,6 +1208,404 @@ class StockScanner:
             "rs_ratio":        round(rs_ratio, 4),
             "rs_outperf_pct":  round(rs_outperf * 100, 2),
             "avg_tv_20d_cr":   round(avg_tv_20d / 1e7, 2),
+        }
+
+    # -- Morning Star candlestick pattern detector --------------------------------
+
+    @staticmethod
+    def _is_morning_star(df: "pd.DataFrame", atr14: "float | None" = None) -> "dict | None":
+        """
+        Strict Morning Star / Morning Doji Star detection — last 3 bars only.
+
+        Returns a detail dict on success, None on failure.  Callers can use
+        `if result:` as a boolean check since None is falsy.
+
+        Strict criteria (all must be met):
+        ────────────────────────────────────
+        Day 1  Large BEARISH candle
+               • body >= 1.0% of price  (significant selling, not a small dip)
+               • body >= 0.3 × ATR14 when ATR is available
+
+        Day 2  Tiny indecision STAR
+               • |close − open| < 35% of Day-1 body  (very small relative to Day-1)
+
+        Day 3  Strong BULLISH recovery
+               • close > open  (bullish)
+               • close >= Day-1 close + 50% × Day-1 body  (≥ midpoint — classic rule)
+               • body >= 50% of Day-1 body  (strong buyers, not a small green candle)
+
+        Only the most recent 3 bars are checked.  No sliding window — the pattern
+        must be forming NOW, not in a completed state 1–2 days ago.
+
+        Return dict keys used for Star Score:
+          penetration  (c3 − c1) / body1  — 0.5 = midpoint, 1.0 = full engulf
+          body1        size of bearish Day-1 candle
+          body3        size of bullish Day-3 candle
+          star_ratio   body2 / body1  — lower = cleaner star
+          full_engulf  True when c3 >= o1  (Day-3 closes above Day-1 open)
+          bars_ago     always 0 (last 3 bars)
+          o1, c1, c3   raw prices for further checks
+        """
+        if len(df) < 3:
+            return None
+        try:
+            raw_o = df["Open"].values
+            raw_c = df["Close"].values
+
+            o1, c1 = float(raw_o[-3]), float(raw_c[-3])   # Day 1 — bearish
+            o2, c2 = float(raw_o[-2]), float(raw_c[-2])   # Day 2 — star
+            o3, c3 = float(raw_o[-1]), float(raw_c[-1])   # Day 3 — bullish
+
+            # All prices must be positive
+            if any(x <= 0 for x in (o1, c1, o2, c2, o3, c3)):
+                return None
+
+            # Day 1: must be bearish
+            if c1 >= o1:
+                return None
+
+            # Day 3: must be bullish
+            if c3 <= o3:
+                return None
+
+            body1 = o1 - c1           # positive (bearish)
+            body2 = abs(c2 - o2)      # star body (agnostic)
+            body3 = c3 - o3           # positive (bullish)
+
+            if body1 <= 0:
+                return None
+
+            # Day-1 must be a genuinely significant candle
+            # Floor: max(1.0% of price, 0.3×ATR14)
+            min_body = (atr14 * 0.3) if (atr14 and atr14 > 0) else 0.0
+            price_pct_floor = o1 * 0.010   # 1.0% of Day-1 open price
+            significant_body = max(min_body, price_pct_floor)
+            if body1 < significant_body:
+                return None
+
+            # Day-2 star must be tiny relative to Day-1 (< 35%)
+            if body2 >= body1 * 0.35:
+                return None
+
+            # Day-3 must close at or above the midpoint of Day-1's body
+            # midpoint = c1 + 50% × body1
+            if c3 < c1 + body1 * 0.50:
+                return None
+
+            # Day-3 body must be strong — at least 50% of Day-1 body
+            # This ensures genuine buying conviction, not a tiny green candle
+            if body3 < body1 * 0.50:
+                return None
+
+            # Pattern passes all strict criteria
+            penetration = (c3 - c1) / body1
+            full_engulf = c3 >= o1
+            return {
+                "penetration": penetration,
+                "body1":       body1,
+                "body3":       body3,
+                "star_ratio":  body2 / body1,
+                "full_engulf": full_engulf,
+                "bars_ago":    0,
+                "o1": o1, "c1": c1, "c3": c3,
+            }
+
+        except Exception:
+            return None
+
+    # -- Momentum-only analysis (6 criteria, no swing filters) -------------------
+
+    def _analyze_momentum(self, ticker: str, df: "pd.DataFrame",
+                          bench_df: "pd.DataFrame | None",
+                          scan_date: "datetime.date | None" = None) -> "dict | None":
+        """
+        Momentum-only technical check — applies only the 6 strict momentum criteria:
+          1. Avg TV 20D  >= MOM_TV_MIN_CR  (liquidity floor)
+          2. Volume Z-score >= MOM_VOLZ_MIN
+          3. Weekly RSI-14  >= MOM_WRSI_MIN
+          4. RSI-14         >= MOM_RSI_MIN
+          5. ADX-14         >= MOM_ADX_MIN  AND  +DI > −DI  (uptrend direction)
+          6. RS outperf     >= MOM_RS_MIN%  AND  20D return >= MOM_RET20_MIN%
+          7. 5-day return   >= MOM_RET5_MIN%  (not losing money last week)
+          8. EMA alignment  price > EMA-20 > EMA-50  (clean uptrend structure)
+
+        scan_date: when provided, df is sliced to <= scan_date before any
+          computation, the last candle's date is validated for freshness
+          (≤ 5 calendar days stale), and BSE Bhavcopy is used to patch
+          the latest candle's OHLCV/volume — matching the behaviour of
+          _analyze() so that momentum-only scans are equally accurate.
+
+        Intentionally skips ALL Swing Trade entry conditions (EMA cross, HH20
+        breakout, closing range, price proximity, ATR ceiling, weekly EMA, RS
+        uptrend line, fundamentals, etc.) so strongly trending stocks are
+        captured regardless of entry setup.
+        """
+        sym = ticker.replace(".NS", "")
+
+        # ── Date-anchored slice ─────────────────────────────────────────────────
+        # Defensive guard: trim any rows whose index is beyond the scan_date.
+        # This matters for live-mode cached data that may already have today's
+        # bar appended while we are running a historical / intra-day rescan.
+        if scan_date is not None:
+            df = df[df.index.normalize() <= pd.Timestamp(scan_date)]
+            if df.empty:
+                return None
+
+        c   = df["Close"].dropna()
+        v   = df["Volume"].reindex(c.index).fillna(0)
+        lo  = df["Low"].reindex(c.index)
+
+        if len(c) < MIN_DATA_ROWS:
+            return None
+
+        # ── Last-candle freshness check ─────────────────────────────────────────
+        # Reject the ticker if its most recent candle is more than 5 calendar
+        # days before the scan reference date — stale data produces wrong signals.
+        candle_date: "datetime.date | None" = None
+        try:
+            candle_date = c.index[-1].date()
+        except Exception:
+            pass
+        if scan_date is not None and candle_date is not None:
+            staleness = (scan_date - candle_date).days
+            if staleness > 5:
+                logger.debug(
+                    "%-12s SKIP  last candle %s is %d days before scan_date %s (stale)",
+                    sym, candle_date, staleness, scan_date,
+                )
+                return None
+
+        cp = float(c.iloc[-1])
+        if cp <= 0:
+            return None
+
+        # ── BSE Bhavcopy patch for the latest candle ────────────────────────────
+        # When running in momentum_only=True mode _analyze() is never called, so
+        # the YF volume / price patch that _analyze() normally applies is missing.
+        # We replicate the same logic here so volume-based filters see accurate data.
+        if scan_date is not None and candle_date is not None:
+            if abs((candle_date - scan_date).days) <= 3:
+                bse_row = self._bse.get(sym, scan_date)
+                if bse_row and bse_row.get("close", 0) > 0:
+                    yf_last_vol = float(v.iloc[-1])
+                    bse_vol     = bse_row["volume"]
+                    needs_patch = (
+                        yf_last_vol == 0
+                        or (bse_vol > 0 and (
+                            yf_last_vol < bse_vol * 0.30
+                            or yf_last_vol > bse_vol * 3.0
+                        ))
+                    )
+                    if needs_patch:
+                        logger.debug(
+                            "%-12s  [mom] BSE patch: O=%.2f H=%.2f L=%.2f C=%.2f "
+                            "Vol=%.0f (YF vol was %.0f)",
+                            sym, bse_row["open"], bse_row["high"],
+                            bse_row["low"],  bse_row["close"],
+                            bse_vol, yf_last_vol,
+                        )
+                        last_idx = df.index[-1]
+                        df = df.copy()   # avoid mutating shared cached df
+                        df.loc[last_idx, "Open"]   = bse_row["open"]
+                        df.loc[last_idx, "High"]   = bse_row["high"]
+                        df.loc[last_idx, "Low"]    = bse_row["low"]
+                        df.loc[last_idx, "Close"]  = bse_row["close"]
+                        df.loc[last_idx, "Volume"] = bse_vol
+                        # Re-derive series from the patched df
+                        c  = df["Close"].dropna()
+                        v  = df["Volume"].reindex(c.index).fillna(0)
+                        lo = df["Low"].reindex(c.index)
+                        cp = bse_row["close"]
+
+        # 1. Liquidity — very relaxed floor (0.6 Cr vs 3 Cr for swing)
+        tv         = c * v
+        avg_tv_20d = float(tv.iloc[-VOLUME_AVG_DAYS:].mean())
+        if avg_tv_20d < MOM_TV_MIN_CR * 1e7:
+            return None
+
+        # 2. Volume Z-score
+        if len(v) < VOLUME_AVG_DAYS + VOLUME_LOOKBACK_DAYS + 1:
+            return None
+        cur_vol_avg = float(v.iloc[-VOLUME_LOOKBACK_DAYS:].mean())
+        vol_window  = v.iloc[-(VOLUME_AVG_DAYS + VOLUME_LOOKBACK_DAYS):-VOLUME_LOOKBACK_DAYS]
+        vol_mean    = float(vol_window.mean())
+        vol_std     = float(vol_window.std())
+        vol_zscore  = (cur_vol_avg - vol_mean) / vol_std if vol_std > 0 else 0.0
+        if vol_zscore < MOM_VOLZ_MIN:
+            return None
+
+        # 3 & 4. Weekly RSI and daily RSI — share the weekly resample
+        weekly = (
+            df.resample("W-FRI")
+              .agg({"Open": "first", "High": "max", "Low": "min",
+                    "Close": "last",  "Volume": "sum"})
+              .dropna(subset=["Close"])
+        )
+        if len(weekly) < 25:
+            return None
+        w_rsi_s = self._rsi(weekly["Close"], 14)
+        w_rsi   = float(w_rsi_s.iloc[-1])
+        if w_rsi < MOM_WRSI_MIN:
+            return None
+
+        rsi_s   = self._rsi(c, RSI_PERIOD)
+        rsi_val = float(rsi_s.iloc[-1])
+        if rsi_val < MOM_RSI_MIN:
+            return None
+
+        # 5. ADX >= MOM_ADX_MIN  (expensive — checked after cheap filters)
+        try:
+            with _suppress_ta_stdout():
+                adx_res = df.ta.adx(length=ADX_PERIOD, append=False)
+        except Exception:
+            return None
+        if adx_res is None or adx_res.empty:
+            return None
+        adx_col = "ADX_%d" % ADX_PERIOD
+        pdi_col = "DMP_%d" % ADX_PERIOD
+        ndi_col = "DMN_%d" % ADX_PERIOD
+        if not all(col in adx_res.columns for col in (adx_col, pdi_col, ndi_col)):
+            return None
+        adx_val = float(adx_res[adx_col].iloc[-1])
+        pdi_val = float(adx_res[pdi_col].iloc[-1])
+        ndi_val = float(adx_res[ndi_col].iloc[-1])
+        if adx_val < MOM_ADX_MIN:
+            return None
+
+        # 5b. +DI must be greater than -DI — the directional trend is UP, not down.
+        #     High ADX in a downtrend is a trap; this filter eliminates all falling-
+        #     knife stocks that happen to have strong ADX readings.
+        if pd.isna(pdi_val) or pd.isna(ndi_val) or pdi_val <= ndi_val:
+            return None
+
+        # 6. RS outperformance and 20D return vs benchmark
+        if bench_df is None:
+            return None
+        bench_c = bench_df["Close"].reindex(c.index, method="ffill").dropna()
+        if len(bench_c) < SECTOR_LOOKBACK_DAYS + 1 or len(c) < SECTOR_LOOKBACK_DAYS + 1:
+            return None
+        stock_ret  = float(c.iloc[-1] / c.iloc[-(SECTOR_LOOKBACK_DAYS + 1)] - 1)
+        index_ret  = float(bench_c.iloc[-1] / bench_c.iloc[-(SECTOR_LOOKBACK_DAYS + 1)] - 1)
+        rs_outperf = stock_ret - index_ret   # decimal
+        r20        = stock_ret * 100         # percent
+        if rs_outperf * 100 < MOM_RS_MIN:
+            return None
+        if r20 < MOM_RET20_MIN:
+            return None
+
+        rs_ratio = (1 + stock_ret) / (1 + index_ret)
+
+        # 7. 5-day return must be non-negative (stock must not be losing last week)
+        if len(c) >= 6:
+            r5 = float(c.iloc[-1] / c.iloc[-6] - 1) * 100
+            if r5 < MOM_RET5_MIN:
+                return None
+
+        # 8. EMA alignment: price > EMA-20 > EMA-50  (clean uptrend structure)
+        #    Without this, a stock with strong 20D return but now in pullback/
+        #    breakdown passes all other filters yet is heading the wrong direction.
+        ema20_s = c.ewm(span=EMA_SHORT_PERIOD, adjust=False,
+                        min_periods=EMA_SHORT_PERIOD).mean()
+        ema50_s = c.ewm(span=EMA_PERIOD, adjust=False, min_periods=EMA_PERIOD).mean()
+        e20 = float(ema20_s.iloc[-1])
+        e50 = float(ema50_s.iloc[-1])
+        if e20 <= 0 or e50 <= 0:
+            return None
+        if cp < e20:          # price below EMA-20 → not in uptrend
+            return None
+        if e20 < e50:         # EMA-20 below EMA-50 → trend not aligned
+            return None
+
+        # 9. MACD bullish confirmation: MACD line > Signal line AND MACD > 0
+        #    This eliminates stocks that look strong on RSI/ADX but have already
+        #    peaked — MACD above zero + above signal confirms the trend is still live.
+        macd_line = macd_signal = macd_hist = None
+        try:
+            with _suppress_ta_stdout():
+                macd_df = df.ta.macd(fast=12, slow=26, signal=9, append=False)
+            if macd_df is not None and not macd_df.empty:
+                macd_col  = "MACD_12_26_9"
+                sig_col   = "MACDs_12_26_9"
+                hist_col  = "MACDh_12_26_9"
+                if all(col in macd_df.columns for col in (macd_col, sig_col, hist_col)):
+                    macd_line   = float(macd_df[macd_col].iloc[-1])
+                    macd_signal = float(macd_df[sig_col].iloc[-1])
+                    macd_hist   = float(macd_df[hist_col].iloc[-1])
+        except Exception:
+            pass
+        # Hard gate: MACD must be bullish (above signal) and above zero line
+        if macd_line is not None and macd_signal is not None:
+            if macd_line <= macd_signal:   # bearish crossover / below signal
+                return None
+            if macd_line <= 0:             # below zero line — not yet in bull zone
+                return None
+
+        # --- All filters passed; compute display-only metrics ---
+
+        # EMA20 / EMA50 already computed above (for filter 8) — reuse
+        price_vs_ema20 = round((cp / e20 - 1) * 100, 2) if e20 > 0 else None
+        ema20_vs_50    = round((e20 / e50 - 1) * 100, 2) if e50 > 0 else None
+
+        # Relative-volume percentile (display only)
+        if len(v) >= 61 + VOLUME_LOOKBACK_DAYS:
+            past60  = v.iloc[-(61 + VOLUME_LOOKBACK_DAYS):-VOLUME_LOOKBACK_DAYS].values
+            rel_vol_pct = float(np.sum(past60 < cur_vol_avg)) / len(past60) * 100
+        else:
+            rel_vol_pct = 0.0
+
+        # 3-month return (display only)
+        r3m = round(float(c.iloc[-1] / c.iloc[-(RETURN_3M_DAYS + 1)] - 1) * 100, 2) \
+              if len(c) > RETURN_3M_DAYS else 0.0
+
+        # ATR-14 stop loss (computed last — only for stocks passing all 6 filters)
+        stop_loss = round(cp * 0.95, 2)   # fallback: 5% below price
+        atr14_val = None
+        try:
+            with _suppress_ta_stdout():
+                atr14_s = df.ta.atr(length=14, append=False)
+            if atr14_s is not None and not atr14_s.dropna().empty:
+                atr14_val  = float(atr14_s.iloc[-1])
+                cl         = float(lo.iloc[-1])
+                _sl_recent = float(lo.iloc[-4:-1].min()) if len(lo) >= 4 else cl
+                _sl_struct = max(cl, _sl_recent)
+                _cand      = max(_sl_struct, cp - 1.0 * atr14_val)
+                stop_loss  = round(
+                    min(max(_cand, cp - 1.5 * atr14_val), cp - 0.5 * atr14_val), 2
+                )
+        except Exception:
+            pass
+
+        # Morning Star pattern check — cheap, run after all 6 filters pass
+        morning_star = self._is_morning_star(df, atr14=atr14_val) is not None
+
+        return {
+            "ticker":         ticker,
+            "display_ticker": sym,
+            "name":           sym,
+            "price":          round(cp, 2),
+            "stop_loss":      stop_loss,
+            "atr14":          round(atr14_val, 2) if atr14_val is not None else None,
+            "vol_zscore":     round(vol_zscore, 2),
+            "rel_vol_pct":    round(rel_vol_pct, 1),
+            "rsi":            round(rsi_val, 2),
+            "weekly_rsi":     round(w_rsi, 2),
+            "adx":            round(adx_val, 2),
+            "pdi":            round(pdi_val, 2),
+            "ndi":            round(ndi_val, 2),
+            "price_vs_ema20": price_vs_ema20,
+            "ema20_vs_50":    ema20_vs_50,
+            "return_20d":     round(r20, 2),
+            "return_1m":      round(r20, 2),
+            "return_3m":      r3m,
+            "rs_ratio":       round(rs_ratio, 4),
+            "rs_outperf_pct": round(rs_outperf * 100, 2),
+            "avg_tv_20d_cr":  round(avg_tv_20d / 1e7, 2),
+            "morning_star":   morning_star,   # True if 3-candle Morning Star pattern detected
+            "macd":           round(macd_line,   4) if macd_line   is not None else None,
+            "macd_signal":    round(macd_signal, 4) if macd_signal is not None else None,
+            "macd_hist":      round(macd_hist,   4) if macd_hist   is not None else None,
+            # Candle-level metadata — date of the last bar actually used
+            "candle_date":    candle_date.isoformat() if candle_date else None,
         }
 
     # -- Individual stock detailed analysis (pass/fail per criterion) ---------
@@ -1289,9 +1740,10 @@ class StockScanner:
 
         # ── ATR ─────────────────────────────────────────────────────────────
         try:
-            atr5_s  = df.ta.atr(length=5,  append=False)
-            atr14_s = df.ta.atr(length=14, append=False)
-            atr20_s = df.ta.atr(length=20, append=False)
+            with _suppress_ta_stdout():
+                atr5_s  = df.ta.atr(length=5,  append=False)
+                atr14_s = df.ta.atr(length=14, append=False)
+                atr20_s = df.ta.atr(length=20, append=False)
             atr5  = float(atr5_s.iloc[-1])  if atr5_s  is not None else float("nan")
             atr14 = float(atr14_s.iloc[-1]) if atr14_s is not None else float("nan")
             atr20 = float(atr20_s.iloc[-1]) if atr20_s is not None else float("nan")
@@ -1502,7 +1954,8 @@ class StockScanner:
 
         # ── ADX ─────────────────────────────────────────────────────────────
         try:
-            adx_res = df.ta.adx(length=ADX_PERIOD, append=False)
+            with _suppress_ta_stdout():
+                adx_res = df.ta.adx(length=ADX_PERIOD, append=False)
             adx_col = "ADX_%d" % ADX_PERIOD
             pdi_col = "DMP_%d" % ADX_PERIOD
             ndi_col = "DMN_%d" % ADX_PERIOD
@@ -1638,10 +2091,15 @@ class StockScanner:
 
     # -- Main scan pipeline --------------------------------------------------
 
-    def scan(self, target_date=None, progress_cb=None):
+    def scan(self, target_date=None, progress_cb=None, momentum_only=False):
         """Run a full scan.
         target_date (datetime.date | None): historical mode; live when None.
         progress_cb (callable | None)     : called with a stage string.
+        momentum_only (bool)              : when True, apply ONLY the 6 momentum
+            criteria (_analyze_momentum) and return those results immediately.
+            Skips all Swing Trade filters (_analyze), fundamentals, sector
+            outperformance, and composite scoring.  The OHLCV cache is still
+            read/written so the momentum scan and swing scan share cached data.
         """
         def _progress(msg):
             if progress_cb:
@@ -1649,7 +2107,9 @@ class StockScanner:
 
         mode = "historical(%s)" % target_date if target_date else "live"
         lbl = "[%s]" % self.label
-        logger.info("%s === Scan start [%s]: %d tickers ===", lbl, mode, len(self.tickers))
+        scan_kind = "momentum-only" if momentum_only else "full"
+        logger.info("%s === Scan start [%s, %s]: %d tickers ===",
+                    lbl, mode, scan_kind, len(self.tickers))
 
         # Reset regime state
         self.last_regime_ok      = True
@@ -1910,24 +2370,70 @@ class StockScanner:
 
         _progress("Applying technical filters (%d tickers)..." % len(all_data))
         if not all_data:
+            self.last_momentum_results = []
             return []
 
-        # Step 3 -- Technical filters
-        pre: list[dict] = []
+        # Reference date used to anchor last-candle validation inside
+        # _analyze_momentum().  We prefer the BSE Bhavcopy date (most accurate
+        # signal of what the market settled at), then fall back to target_date
+        # (historical mode), and finally None (no validation, allow any latest bar).
+        _mom_scan_date = bse_ref_date or target_date   # may be None in live + no BSE
+
+        # Step 3 -- Technical filters (Swing) + Momentum filters in one pass
+        # Both filters run on the same downloaded OHLCV data — no second download.
+        # pre        : stocks passing all swing-trade filters (→ scan_state["data"])
+        # momentum_pre: stocks passing only the 6 momentum criteria (→ state["momentum_data"])
+        # When momentum_only=True, _analyze() is skipped entirely — only
+        # _analyze_momentum() runs, and we return its results immediately
+        # (skipping fundamentals, sector outperformance, and composite scoring).
+        pre: list[dict]          = []
+        momentum_pre: list[dict] = []
         _all_data_items = list(all_data.items())
         _filter_total   = len(_all_data_items)
         for _fi, (t_key, df) in enumerate(_all_data_items, 1):
+            if not momentum_only:
+                try:
+                    r = self._analyze(t_key, df, bench_df, bse_date=bse_ref_date)
+                    if r:
+                        pre.append(r)
+                except Exception as exc:
+                    logger.debug("_analyze(%s) error: %s", t_key, exc)
+            # Independent momentum check — not gated by swing result
             try:
-                r = self._analyze(t_key, df, bench_df, bse_date=bse_ref_date)
-                if r:
-                    pre.append(r)
+                r_mom = self._analyze_momentum(t_key, df, bench_df, scan_date=_mom_scan_date)
+                if r_mom:
+                    momentum_pre.append(r_mom)
             except Exception as exc:
-                logger.debug("_analyze(%s) error: %s", t_key, exc)
+                logger.debug("_analyze_momentum(%s) error: %s", t_key, exc)
             if _fi % 50 == 0 or _fi == _filter_total:
-                _progress("Technical filters: %d/%d tickers... (%d passed)"
-                          % (_fi, _filter_total, len(pre)))
-                logger.info("%s Technical filters: %d/%d tickers processed (%d passed so far)",
-                            lbl, _fi, _filter_total, len(pre))
+                if momentum_only:
+                    _progress("Momentum filters: %d/%d tickers... (%d passed)"
+                              % (_fi, _filter_total, len(momentum_pre)))
+                    logger.info("%s Momentum filters: %d/%d tickers processed "
+                                "(%d momentum passed so far)",
+                                lbl, _fi, _filter_total, len(momentum_pre))
+                else:
+                    _progress("Technical filters: %d/%d tickers... (%d swing, %d momentum passed)"
+                              % (_fi, _filter_total, len(pre), len(momentum_pre)))
+                    logger.info("%s Technical filters: %d/%d tickers processed "
+                                "(%d swing, %d momentum passed so far)",
+                                lbl, _fi, _filter_total, len(pre), len(momentum_pre))
+
+        # Store momentum results on the instance so main.py can read them
+        self.last_momentum_results = momentum_pre
+        logger.info("%s Momentum-only pass: %d/%d tickers qualify",
+                    lbl, len(momentum_pre), len(all_data))
+
+        # When running in momentum-only mode, return immediately — no fundamentals,
+        # no sector outperformance filter, no composite scoring.
+        if momentum_only:
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("%s MOMENTUM-ONLY SCAN COMPLETE: %d of %d tickers passed",
+                        lbl, len(momentum_pre), len(all_data))
+            logger.info("=" * 80)
+            logger.info("")
+            return momentum_pre
 
         # ---- Phase 1 summary: Technical Filters --------------------------------
         _SEP = "-" * 115
@@ -2129,4 +2635,305 @@ class StockScanner:
         logger.info("=" * 115)
         logger.info("")
         return top
+
+    # -- Morning Star pattern scan (all tickers, cache-first) --------------------
+
+    def scan_morning_star(
+        self,
+        target_date: "dt_mod.date | None" = None,
+        progress_cb=None,
+    ) -> "list[dict]":
+        """
+        Scan ALL tickers for the Morning Star 3-candle bullish-reversal pattern.
+
+        Key differences from scan() / _analyze_momentum():
+          • No regime check, no sector data, no benchmark required.
+          • Checks ONLY _is_morning_star() — no momentum/swing criteria.
+          • Cache-first strategy for BOTH live and historical dates:
+              - Cached data that already covers target_date → slice, no download.
+              - Cached data that is older than target_date  → incremental delta dl.
+              - No cache at all                             → full HIST_DAYS dl.
+            This means changing the date filter in the UI is nearly instant once
+            the OHLCV cache has been populated by any previous scan.
+          • Returns a lightweight dict per match (price, RSI, 20D return, etc.).
+        """
+        def _progress(msg):
+            if progress_cb:
+                progress_cb(msg)
+
+        mode = "historical(%s)" % target_date if target_date else "live"
+        lbl  = "[%s MorningStar]" % self.label
+        logger.info("%s === Scan start [%s]: %d tickers ===", lbl, mode, len(self.tickers))
+
+        # ── Step 1: OHLCV loading (cache-first, delta download for misses) ────────
+        _progress("Loading OHLCV data (%d tickers, cache-first)..." % len(self.tickers))
+        all_data: dict        = {}
+        delta_update: list    = []   # (ticker, days_needed)  — partial cache refresh
+        full_download: list   = []   # tickers with no cache at all
+
+        for t in self.tickers:
+            cached = _cache.load(t)
+            if cached is not None and not cached.empty:
+                try:
+                    last_cached = (
+                        cached.index[-1].date()
+                        if hasattr(cached.index[-1], "date")
+                        else cached.index[-1]
+                    )
+                except Exception:
+                    last_cached = None
+
+                if target_date is None:
+                    # Live mode: check freshness exactly like normal scan
+                    if _cache.is_fresh(cached):
+                        all_data[t] = cached
+                    else:
+                        delta_update.append(t)
+                else:
+                    if last_cached is not None and last_cached >= target_date:
+                        # Cache already covers target_date — slice later, no download
+                        all_data[t] = cached
+                    else:
+                        # Cache exists but doesn't reach target_date — download delta
+                        delta_update.append(t)
+            else:
+                full_download.append(t)
+
+        logger.info(
+            "%s Cache: %d from disk | %d delta fetch | %d full download",
+            lbl, len(all_data), len(delta_update), len(full_download),
+        )
+
+        # ── 1a. Delta updates (stale/partial cache) ───────────────────────────────
+        if delta_update:
+            _progress("Updating %d stale / short tickers..." % len(delta_update))
+            for i in range(0, len(delta_update), DOWNLOAD_BATCH_SIZE):
+                batch = delta_update[i: i + DOWNLOAD_BATCH_SIZE]
+                res   = self._download_batch_ns(
+                    batch, CACHE_UPDATE_DAYS, end_date=target_date
+                )
+                for t in batch:
+                    df_new = res.get(t)
+                    cached  = _cache.load(t)
+                    if df_new is not None and not df_new.empty:
+                        merged = _cache.merge(cached, df_new) if cached is not None else df_new
+                        all_data[t] = merged
+                        if target_date is None:          # only persist live-mode updates
+                            _cache.save(t, merged)
+                    elif cached is not None:
+                        all_data[t] = cached             # use stale cache as fallback
+
+        # ── 1b. Full downloads (no cache at all) ──────────────────────────────────
+        if full_download:
+            _progress("Full download for %d new tickers..." % len(full_download))
+            for i in range(0, len(full_download), DOWNLOAD_BATCH_SIZE):
+                batch = full_download[i: i + DOWNLOAD_BATCH_SIZE]
+                res   = self._download_batch_ns(
+                    batch, HIST_DAYS, end_date=target_date
+                )
+                for t in batch:
+                    df = res.get(t)
+                    if df is not None and not df.empty and self._is_quality_ok(df):
+                        all_data[t] = df
+                        if target_date is None:
+                            _cache.save(t, df)
+
+        logger.info("%s OHLCV done: %d usable tickers", lbl, len(all_data))
+        if not all_data:
+            return []
+
+        # ── Step 2: Apply Morning Star + quality filters ────────────────────
+        scan_date = target_date or dt_mod.date.today()
+        _progress("Checking Morning Star pattern (%d tickers)..." % len(all_data))
+
+        results:   list = []
+        _total    = len(all_data)
+        for _fi, (t_key, df) in enumerate(all_data.items(), 1):
+            try:
+                # Slice to scan_date (critical for historical accuracy)
+                df_s = df[df.index.normalize() <= pd.Timestamp(scan_date)]
+                if df_s.empty:
+                    continue
+
+                c  = df_s["Close"].dropna()
+                if len(c) < 20:       # need enough bars for indicators
+                    continue
+
+                # Freshness: reject if last candle is stale (>5 calendar days)
+                candle_date = c.index[-1].date()
+                if (scan_date - candle_date).days > 5:
+                    continue
+
+                cp  = float(c.iloc[-1])
+                if cp <= 0:
+                    continue
+                sym = t_key.replace(".NS", "")
+                v   = df_s["Volume"].reindex(c.index).fillna(0)
+                tv  = c * v
+
+                # ── Q1. Liquidity gate ───────────────────────────────────────
+                avg_tv_20d = float(tv.iloc[-VOLUME_AVG_DAYS:].mean())
+                if avg_tv_20d < MS_TV_MIN_CR * 1e7:
+                    continue
+
+                # ── Q2. Prior downtrend: trough must fall ≥ MS_PRIOR_DROP_PCT%
+                # below the close ~10 bars before the pattern
+                pre_close   = 0.0
+                decline_pct = 0.0
+                if len(c) >= 14:
+                    pre_close  = float(c.iloc[-12])
+                    trough_cls = float(c.iloc[-7:-1].min())
+                    if pre_close > 0:
+                        decline_pct = (pre_close - trough_cls) / pre_close * 100
+                        if decline_pct < MS_PRIOR_DROP_PCT:
+                            continue
+
+                # ── Q3. Morning Star candlestick check (strict) ─────────────
+                ms_info = self._is_morning_star(df_s)
+                if ms_info is None:
+                    continue
+
+                # ── Q4. Volume on reversal >= MS_VOL_CONFIRM_X × 20D avg ────
+                avg_vol    = 0.0
+                recent_vol = 0.0
+                if len(v) >= VOLUME_AVG_DAYS + 4:
+                    avg_vol    = float(v.iloc[-(VOLUME_AVG_DAYS + 3):-3].mean())
+                    recent_vol = float(v.iloc[-3:].mean())
+                    if avg_vol > 0 and recent_vol < avg_vol * MS_VOL_CONFIRM_X:
+                        continue
+
+                # ── RSI (compute for display + scoring only, no gate) ────────
+                rsi_val = None
+                if len(c) >= RSI_PERIOD + 1:
+                    rsi_s   = self._rsi(c, RSI_PERIOD)
+                    rsi_val = round(float(rsi_s.iloc[-1]), 2)
+
+                # ── EMA-50 (compute for display + scoring only, no gate) ─────
+                price_vs_ema50 = None
+                ema50          = None
+                if len(c) >= EMA_PERIOD:
+                    _ema50 = float(
+                        c.ewm(span=EMA_PERIOD, adjust=False,
+                              min_periods=EMA_PERIOD).mean().iloc[-1]
+                    )
+                    if _ema50 > 0:
+                        ema50          = _ema50
+                        price_vs_ema50 = (_ema50 and (cp / _ema50 - 1) * 100)
+
+                # ── Stock qualifies — compute display metrics ────────────────
+                # 20-day return
+                r20 = (
+                    round(float(c.iloc[-1] / c.iloc[-(SECTOR_LOOKBACK_DAYS + 1)] - 1) * 100, 2)
+                    if len(c) > SECTOR_LOOKBACK_DAYS else 0.0
+                )
+
+                # 3-month return
+                r3m = (
+                    round(float(c.iloc[-1] / c.iloc[-(RETURN_3M_DAYS + 1)] - 1) * 100, 2)
+                    if len(c) > RETURN_3M_DAYS else 0.0
+                )
+
+                # EMA20 position
+                price_vs_ema20 = None
+                ema20_vs_50    = None
+                if len(c) >= EMA_SHORT_PERIOD:
+                    ema20 = float(
+                        c.ewm(span=EMA_SHORT_PERIOD, adjust=False,
+                              min_periods=EMA_SHORT_PERIOD).mean().iloc[-1]
+                    )
+                    if ema20 > 0:
+                        price_vs_ema20 = round((cp / ema20 - 1) * 100, 2)
+                    if ema50 is not None and ema20 > 0 and ema50 > 0:
+                        ema20_vs_50 = round((ema20 / ema50 - 1) * 100, 2)
+
+                # Volume Z-score
+                vol_zscore = None
+                if len(v) >= VOLUME_AVG_DAYS + 20 + 1:
+                    cur_vol = float(v.iloc[-3:].mean())
+                    w       = v.iloc[-(VOLUME_AVG_DAYS + 20):-3]
+                    wstd    = float(w.std())
+                    if wstd > 0:
+                        vol_zscore = round((cur_vol - float(w.mean())) / wstd, 2)
+
+                # ── Star Quality Score (0-100) ───────────────────────────────
+                # 4 components (weights sum to 1.0):
+                #   penetration (0.30) — 50%→0  to 100%+→100  (full engulf = 100)
+                #   volume surge (0.25) — 1.0×avg→0  to 2.5×avg→100
+                #   oversold entry (0.25) — RSI tent: peak at RSI 30-50
+                #   prior decline (0.20) — 3%→0  to 15%+→100
+
+                # 1. Penetration: min is now 50%, scale to 100% engulf
+                pen      = ms_info["penetration"]
+                pen_sc   = min(1.0, max(0.0, (pen - 0.50) / 0.50))
+                if ms_info["full_engulf"]:
+                    pen_sc = 1.0
+
+                # 2. Volume surge: 1.0×→0.0, 2.5×→1.0
+                if avg_vol > 0 and recent_vol > 0:
+                    vol_ratio = recent_vol / avg_vol
+                    vol_sc    = min(1.0, max(0.0, (vol_ratio - 1.0) / 1.5))
+                else:
+                    vol_sc = 0.2
+
+                # 3. Oversold entry — tent function peaking at RSI 30-50
+                if rsi_val is not None:
+                    if rsi_val <= 50:
+                        rsi_sc = max(0.0, min(1.0, (rsi_val - 20.0) / 30.0))
+                    else:
+                        rsi_sc = max(0.0, (75.0 - rsi_val) / 25.0)
+                else:
+                    rsi_sc = 0.4
+
+                # 4. Prior decline depth: 3%→0.0, 15%+→1.0
+                decline_sc = min(1.0, max(0.0, (decline_pct - 3.0) / 12.0))
+
+                star_score = round((
+                    pen_sc     * 0.30
+                    + vol_sc   * 0.25
+                    + rsi_sc   * 0.25
+                    + decline_sc * 0.20
+                ) * 100, 1)
+
+                results.append({
+                    "ticker":          t_key,
+                    "display_ticker":  sym,
+                    "name":            sym,
+                    "price":           round(cp, 2),
+                    "candle_date":     candle_date.isoformat(),
+                    "return_20d":      r20,
+                    "return_1m":       r20,
+                    "return_3m":       r3m,
+                    "avg_tv_20d_cr":   round(avg_tv_20d / 1e7, 2),
+                    "rsi":             rsi_val,
+                    "weekly_rsi":      None,
+                    "adx":             None,
+                    "pdi":             None,
+                    "ndi":             None,
+                    "price_vs_ema20":  price_vs_ema20,
+                    "ema20_vs_50":     ema20_vs_50,
+                    "vol_zscore":      vol_zscore,
+                    "rel_vol_pct":     None,
+                    "rs_ratio":        None,
+                    "rs_outperf_pct":  None,
+                    "stop_loss":       None,
+                    "atr14":           None,
+                    "morning_star":    True,
+                    "mom_score":       star_score,
+                })
+            except Exception as exc:
+                logger.debug("MorningStar(%s) error: %s", t_key, exc)
+
+            if _fi % 100 == 0 or _fi == _total:
+                _progress(
+                    "Morning Star: %d/%d tickers checked (%d found)"
+                    % (_fi, _total, len(results))
+                )
+                logger.info("%s  %d/%d checked, %d Morning Star found",
+                            lbl, _fi, _total, len(results))
+
+        logger.info(
+            "%s === Morning Star scan complete: %d/%d tickers qualify ===",
+            lbl, len(results), len(all_data),
+        )
+        return results
 

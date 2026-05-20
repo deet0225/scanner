@@ -145,22 +145,17 @@ class NSEQuoteClient:
 
 class ScreenerClient:
     """
-    Scrapes screener.in for fundamental data more accurate for Indian stocks
-    than Yahoo Finance (updated quarterly from BSE/NSE filings).
+    Scrapes screener.in for fundamental data (quarterly filing-accurate for Indian stocks).
 
-    Data extracted:
-      - Market Cap (Rs Cr)
-      - Debt to Equity ratio
-      - Current Ratio
-      - Return on Equity (ROE %)
-      - Promoter Holding (%)
-      - Sales Growth (%)
+    Fields extracted (consolidated page preferred, standalone fallback):
+      market_cap_cr, pe_ratio, book_value, roce, roe, dividend_yield,
+      promoter_holding, sales_growth_pct, profit_growth_3y, debt_equity (if present)
     """
 
-    BASE_URL   = "https://www.screener.in/company/{sym}/"
+    _BASE   = "https://www.screener.in/company/{sym}/{mode}/"
     _cache:    dict = {}
     _cache_ts: dict = {}
-    _TTL = 3600  # 1 hour
+    _TTL = 3600  # 1 hour in-memory TTL
 
     def get(self, nse_symbol: str) -> dict | None:
         sym = nse_symbol.upper().replace(".NS", "").replace(".BO", "")
@@ -169,55 +164,213 @@ class ScreenerClient:
         if sym in self._cache and (now - self._cache_ts.get(sym, 0)) < self._TTL:
             return self._cache[sym]
 
-        try:
-            r = _SESSION.get(self.BASE_URL.format(sym=sym), timeout=20)
-            if r.status_code == 404:
-                r = _SESSION.get(
-                    f"https://www.screener.in/company/{sym}/consolidated/", timeout=20
+        result: dict = {}
+        for mode in ("consolidated", ""):    # consolidated preferred; "" = standalone
+            url = self._BASE.format(sym=sym, mode=mode).rstrip("/") + "/"
+            try:
+                r = _SESSION.get(url, timeout=20)
+                if r.status_code == 404:
+                    continue
+                if r.status_code != 200:
+                    continue
+                html = r.text
+
+                # ── 1. Key metrics block ──────────────────────────────────────────────
+                kv = re.findall(
+                    r'<span\s+class="name">\s*(.*?)\s*</span>.*?<span\s+class="number">([\d,\.]+)',
+                    html, re.DOTALL,
                 )
-            if r.status_code != 200:
-                return None
+                for raw_key, raw_val in kv:
+                    key = re.sub(r'\s+', ' ', raw_key).strip()
+                    key_l = key.lower()          # ← case-insensitive comparisons
+                    try:
+                        v = float(raw_val.replace(',', ''))
+                    except ValueError:
+                        continue
+                    if 'market cap' in key_l:
+                        result.setdefault('market_cap_cr', v)
+                    elif 'current price' in key_l:
+                        result.setdefault('current_price', v)
+                    elif 'stock p/e' in key_l or key_l == 'p/e':
+                        result.setdefault('pe_ratio', v)
+                    elif 'book value' in key_l:
+                        result.setdefault('book_value', v)
+                    elif key_l == 'roce':
+                        result.setdefault('roce', v)
+                    elif key_l == 'roe':
+                        result.setdefault('roe', v)
+                    elif 'dividend yield' in key_l:
+                        result.setdefault('dividend_yield', v)
+                    elif 'debt to equity' in key_l or 'debt / equity' in key_l or 'debt/equity' in key_l:
+                        result.setdefault('debt_equity', v)
+                    elif 'current ratio' in key_l:
+                        result.setdefault('current_ratio', v)
 
-            html   = r.text
-            result = {}
+                # ── 1b.  D/E from Balance Sheet rows (primary source) ─────────────
+                # Screener.in never labels "Debt to equity" in key metrics.
+                # We compute it: D/E = Borrowings / (Equity Share Capital + Reserves)
+                def _last_bs_val(label: str) -> float | None:
+                    """Extract the most-recent-year value for a balance-sheet row."""
+                    idx2 = html.find(label)
+                    if idx2 == -1:
+                        return None
+                    rs2 = html.rfind('<tr', max(0, idx2 - 300), idx2)
+                    re2 = html.find('</tr>', idx2)
+                    chunk2 = (html[rs2: re2 + 5]
+                              if rs2 != -1 and re2 != -1
+                              else html[idx2: idx2 + 800])
+                    nums2 = []
+                    for tv in re.findall(r'<td[^>]*>\s*(-?[\d,]+(?:\.\d+)?)\s*</td>', chunk2):
+                        try:
+                            nums2.append(float(tv.replace(',', '')))
+                        except ValueError:
+                            pass
+                    return nums2[-1] if nums2 else None
 
-            mc = self._extract(html, r"Market Cap\s*</span[^>]*>.*?<span[^>]*>([\d,\.]+)")
-            if mc:
-                result["market_cap_cr"] = float(mc.replace(",", ""))
+                if 'debt_equity' not in result:
+                    borrowings  = _last_bs_val('Borrowings')
+                    reserves    = _last_bs_val('Reserves')
+                    share_cap   = (_last_bs_val('Equity Share Capital')
+                                   or _last_bs_val('Share Capital'))
+                    if borrowings is not None and borrowings >= 0:
+                        equity = (share_cap or 0.0) + (reserves or 0.0)
+                        if equity > 0:
+                            result.setdefault('debt_equity',
+                                              round(borrowings / equity, 2))
+                        elif borrowings == 0.0:
+                            result.setdefault('debt_equity', 0.0)
 
-            de = self._extract(html, r"Debt to equity\s*</span[^>]*>.*?<span[^>]*>([\d,\.]+)")
-            if not de:
-                de = self._extract(html, r"Debt / Equity\s*</span[^>]*>.*?<span[^>]*>([\d,\.]+)")
-            if de:
-                result["debt_equity"] = float(de.replace(",", ""))
+                # ── 2. Promoter + FII + DII from shareholding section ─────────────
+                sh_idx = html.find('id="shareholding"')
+                if sh_idx != -1:
+                    sh_chunk = html[sh_idx: sh_idx + 5000]
+                    for label, field in [
+                        ('Promoters', 'promoter_holding'),
+                        ('FII',       'fii_holding'),
+                        ('DII',       'dii_holding'),
+                    ]:
+                        m = re.search(
+                            rf'{label}.*?<td[^>]*>\s*([\d\.]+)%?\s*</td>',
+                            sh_chunk, re.DOTALL,
+                        )
+                        if m:
+                            result.setdefault(field, float(m.group(1)))
 
-            cr = self._extract(html, r"Current Ratio\s*</span[^>]*>.*?<span[^>]*>([\d,\.]+)")
-            if cr:
-                result["current_ratio"] = float(cr.replace(",", ""))
+                # ── 3. Compounded growth tables (Sales + Profit) ──────────────────
+                for section, pref_3y, pref_5y, pref_10y, pref_ttm in [
+                    ('Compounded Sales Growth',
+                     'sales_growth_pct', 'sales_growth_5y', 'sales_growth_10y', 'sales_growth_ttm'),
+                    ('Compounded Profit Growth',
+                     'profit_growth_3y', 'profit_growth_5y', 'profit_growth_10y', 'profit_growth_ttm'),
+                ]:
+                    g_idx = html.find(section)
+                    if g_idx != -1:
+                        chunk = html[g_idx: g_idx + 500]
+                        rows = re.findall(
+                            r'<td>\s*([^<]+?)\s*</td>\s*<td>\s*(-?[\d]+)\s*%\s*</td>',
+                            chunk,
+                        )
+                        for period, pct in rows:
+                            p = period.strip().lower()
+                            if '10 year' in p:
+                                result.setdefault(pref_10y,  float(pct))
+                            elif '5 year' in p:
+                                result.setdefault(pref_5y,   float(pct))
+                            elif '3 year' in p:
+                                result.setdefault(pref_3y,   float(pct))
+                            elif 'ttm' in p or 'trailing' in p:
+                                result.setdefault(pref_ttm,  float(pct))
 
-            roe = self._extract(html, r"Return on equity\s*</span[^>]*>.*?<span[^>]*>(-?[\d,\.]+)")
-            if not roe:
-                roe = self._extract(html, r"ROE\s*</span[^>]*>.*?<span[^>]*>(-?[\d,\.]+)")
-            if roe:
-                result["roe"] = float(roe.replace(",", ""))
+                # ── 4. Return on Equity history (10Y avg = moat signal) ───────────
+                roe_idx = html.find('Return on Equity')
+                if roe_idx != -1:
+                    chunk = html[roe_idx: roe_idx + 400]
+                    rows = re.findall(
+                        r'<td>\s*([^<]+?)\s*</td>\s*<td>\s*(-?[\d]+)\s*%\s*</td>',
+                        chunk,
+                    )
+                    for period, pct in rows:
+                        p = period.strip().lower()
+                        if '10 year' in p:
+                            result.setdefault('roe_10y', float(pct))
+                        elif '5 year' in p:
+                            result.setdefault('roe_5y',  float(pct))
 
-            ph = self._extract(html, r"Promoter Holding\s*</span[^>]*>.*?<span[^>]*>([\d,\.]+)")
-            if ph:
-                result["promoter_holding"] = float(ph.replace(",", ""))
+                # ── 5. Cash from Operations — cash flow section ───────────────────
+                # Screener shows: "Cash from Operating Activity +" as the row label
+                # The row has multiple year columns; we want the most recent (last) year.
+                for cfo_label in (
+                    'Cash from Operating Activity',
+                    'Cash from Operations',
+                    'Cash from operating activity',
+                    'Cash From Operating Activity',
+                ):
+                    cf_idx = html.find(cfo_label)
+                    if cf_idx == -1:
+                        continue
 
-            sg = self._extract(html, r"Sales growth\s*</span[^>]*>.*?<span[^>]*>(-?[\d,\.]+)")
-            if sg:
-                result["sales_growth_pct"] = float(sg.replace(",", ""))
+                    # Walk back to find the enclosing <tr> for this row
+                    row_start = html.rfind('<tr', max(0, cf_idx - 300), cf_idx)
+                    row_end   = html.find('</tr>', cf_idx)
+                    if row_start != -1 and row_end != -1:
+                        row_chunk = html[row_start: row_end + 5]
+                    else:
+                        row_chunk = html[cf_idx: cf_idx + 800]
 
-            if result:
-                self._cache[sym]    = result
-                self._cache_ts[sym] = now
-                return result
-            return None
+                    # Extract all numeric <td> cells (signed, decimal-friendly)
+                    td_vals = re.findall(
+                        r'<td[^>]*>\s*(-?[\d,]+(?:\.\d+)?)\s*</td>',
+                        row_chunk,
+                    )
+                    nums: list = []
+                    for tv in td_vals:
+                        try:
+                            nums.append(float(tv.replace(',', '')))
+                        except ValueError:
+                            pass
 
-        except Exception as exc:
-            logger.debug("ScreenerClient.get(%s): %s", sym, exc)
-            return None
+                    # Take the last non-zero value = most recent year
+                    non_zero = [n for n in nums if n != 0.0]
+                    if non_zero:
+                        result.setdefault('cash_from_operations', non_zero[-1])
+                        break
+
+                if result:
+                    break   # data found — no need to try alternate URL
+
+            except Exception as exc:
+                logger.debug("ScreenerClient.get(%s) [%s]: %s", sym, mode, exc)
+                continue
+
+        if result:
+            self._cache[sym]    = result
+            self._cache_ts[sym] = time.time()
+            return result
+        return None
+
+    def get_sme(self, nse_symbol: str) -> dict | None:
+        """Like get() but also tries the '-SME' URL slug used by NSE Emerge stocks.
+
+        Many NSE Emerge companies are indexed on screener.in as:
+          https://www.screener.in/company/TICKER-SME/
+        instead of the regular:
+          https://www.screener.in/company/TICKER/
+        """
+        sym = nse_symbol.upper().replace(".NS", "").replace(".BO", "")
+
+        # 1. Try normal URL first (works for graduated / dual-listed SME stocks)
+        result = self.get(sym)
+        if result:
+            return result
+
+        # 2. Try with -SME suffix (NSE Emerge stocks on screener.in)
+        sme_sym = sym + "-SME"
+        result2 = self.get(sme_sym)
+        if result2:
+            # Also cache under the plain symbol so future calls are fast
+            self._cache[sym]    = result2
+            self._cache_ts[sym] = time.time()
+        return result2
 
     @staticmethod
     def _extract(html: str, pattern: str) -> str | None:
@@ -822,40 +975,37 @@ class NSEPythonHistClient:
 
 class FundamentalsClient:
     """
-    Returns fundamentals for a stock using the best available source.
+    Returns fundamentals for a stock.
 
-    Priority:
-      market_cap  : NSE live API → Screener.in → Apify → Alpha Vantage → yfinance
-      debt_equity : Screener.in  → Apify        → Alpha Vantage        → yfinance
-      sector      : NSE live API → Alpha Vantage → yfinance
+    Active sources (both confirmed working):
+      market_cap + sector : NSE live API  (issuedSize × lastPrice)
+      debt_equity, ROCE,    Screener.in  (HTML scrape — direct, no API key needed)
+      ROE, promoter %,
+      sales growth, etc.
+
+    Removed: Apify, Alpha Vantage, Yahoo Finance (all require keys or are
+    blocked by corporate SSL proxy).
     """
 
-    def __init__(
-        self,
-        alpha_key:   str = "",
-        apify_key:   str = "",
-        apify_actor: str = "",
-    ):
+    def __init__(self, **kwargs):
+        # Accept (and ignore) legacy alpha_key / apify_key keyword args
         self._nse      = NSEQuoteClient()
         self._screener = ScreenerClient()
-        self._av       = AlphaVantageClient(api_key=alpha_key)
-        self._apify    = ApifyScreenerClient(api_key=apify_key, actor_id=apify_actor)
 
     def get(
         self,
         ticker: str,
-        yf_fundamentals_fn=None,
+        yf_fundamentals_fn=None,   # kept for backward compat — not called
     ) -> tuple[str | None, float | None, float | None]:
         """
         Returns (sector, debt_equity_x100, market_cap_inr).
 
-        debt_equity_x100 : ratio × 100  (Yahoo legacy format — 250 = D/E 2.5)
+        debt_equity_x100 : ratio × 100  (legacy Yahoo format — 250 = D/E 2.5)
         market_cap_inr   : absolute INR (e.g. 12e9 = Rs.1200 Cr)
-        Any value may be None if unavailable from all sources.
         """
         sym = ticker.upper().replace(".NS", "").replace(".BO", "")
 
-        # ── 1. NSE live (market cap + sector) ───────────────────────────────
+        # ── 1. NSE live API (market cap + sector) ───────────────────────────
         nse_data   = None
         try:
             nse_data = self._nse.get(sym)
@@ -865,7 +1015,7 @@ class FundamentalsClient:
         market_cap = nse_data.get("market_cap_inr") if nse_data else None
         sector     = nse_data.get("sector")          if nse_data else None
 
-        # ── 2. Screener.in (D/E + market cap cross-check) ───────────────────
+        # ── 2. Screener.in (ROCE/ROE/promoter/sales growth + D/E if shown) ──
         debt_equity = None
         try:
             sc = self._screener.get(sym)
@@ -874,46 +1024,10 @@ class FundamentalsClient:
                     debt_equity = sc["debt_equity"] * 100   # → ×100 format
                 if market_cap is None and "market_cap_cr" in sc:
                     market_cap = sc["market_cap_cr"] * 1e7
+                if sector is None and "sector" in sc:
+                    sector = sc["sector"]
         except Exception:
             pass
-
-        # ── 3. Apify screener (D/E fallback) ────────────────────────────────
-        if debt_equity is None and self._apify.available:
-            try:
-                ap = self._apify.get(sym)
-                if ap:
-                    if "debt_equity" in ap:
-                        debt_equity = ap["debt_equity"] * 100
-                    if market_cap is None and "market_cap_cr" in ap:
-                        market_cap = ap["market_cap_cr"] * 1e7
-            except Exception:
-                pass
-
-        # ── 4. Alpha Vantage (sector + market cap + D/E fallback) ────────────
-        if (market_cap is None or sector is None or debt_equity is None) \
-                and self._av.available:
-            try:
-                av = self._av.get_fundamentals(sym)
-                if av:
-                    if sector is None and "sector" in av:
-                        sector = av["sector"]
-                    if market_cap is None and "market_cap_inr" in av:
-                        market_cap = av["market_cap_inr"]
-                    if debt_equity is None and "debt_equity_ratio" in av:
-                        debt_equity = av["debt_equity_ratio"] * 100  # → ×100
-            except Exception:
-                pass
-
-        # ── 5. Yahoo Finance fallback (last resort) ───────────────────────────
-        if (market_cap is None or sector is None or debt_equity is None) \
-                and yf_fundamentals_fn is not None:
-            try:
-                yf_sector, yf_de, yf_mc = yf_fundamentals_fn(ticker)
-                if sector      is None: sector      = yf_sector
-                if debt_equity is None: debt_equity = yf_de
-                if market_cap  is None: market_cap  = yf_mc
-            except Exception:
-                pass
 
         return sector, debt_equity, market_cap
 
@@ -926,11 +1040,12 @@ class FundamentalsClient:
 
     def get_extra_fundamentals(self, nse_symbol: str) -> dict:
         """
-        Returns enriched display-only fields (non-critical for filters).
-        Sources: Screener.in + Alpha Vantage.
-        Keys: roe, current_ratio, promoter_holding, pe_ratio, eps,
-              sales_growth_pct, dividend_yield, 52w_high, 52w_low,
-              profit_margin_pct, return_on_equity_ttm, book_value
+        Returns all enriched display + analysis fields from Screener.in.
+        Keys (all optional): roce, roe, roe_5y, roe_10y, promoter_holding,
+          fii_holding, dii_holding, sales_growth_pct, sales_growth_5y,
+          sales_growth_10y, profit_growth_3y, profit_growth_5y,
+          profit_growth_10y, pe_ratio, book_value, dividend_yield,
+          debt_equity, market_cap_cr, current_price
         """
         sym    = nse_symbol.upper().replace(".NS", "").replace(".BO", "")
         extras: dict = {}
@@ -938,24 +1053,47 @@ class FundamentalsClient:
         try:
             sc = self._screener.get(sym)
             if sc:
-                for k in ("roe", "current_ratio", "promoter_holding",
-                          "sales_growth_pct"):
-                    if k in sc:
+                for k in ("roce", "roe", "roe_5y", "roe_10y",
+                          "promoter_holding", "fii_holding", "dii_holding",
+                          "sales_growth_pct", "sales_growth_5y", "sales_growth_10y",
+                          "profit_growth_3y", "profit_growth_5y", "profit_growth_10y",
+                          "sales_growth_ttm", "profit_growth_ttm",
+                          "pe_ratio", "book_value", "dividend_yield",
+                          "debt_equity", "market_cap_cr", "current_price",
+                          "current_ratio", "cash_from_operations"):   # NEW
+                    if k in sc and sc[k] is not None:
                         extras[k] = sc[k]
         except Exception:
             pass
 
-        if self._av.available:
-            try:
-                av = self._av.get_fundamentals(sym)
-                if av:
-                    for k in ("pe_ratio", "eps", "dividend_yield", "52w_high",
-                              "52w_low", "profit_margin_pct",
-                              "return_on_equity_ttm", "book_value"):
-                        if k in av and k not in extras:
-                            extras[k] = av[k]
-            except Exception:
-                pass
+        return extras
+
+    def get_extra_sme_fundamentals(self, nse_symbol: str) -> dict:
+        """
+        Like get_extra_fundamentals() but uses SME-aware Screener.in scraping.
+
+        Additionally tries the '-SME' URL variant used by NSE Emerge stocks
+        (e.g. screener.in/company/TICKER-SME/) as a fallback when the regular
+        URL returns no data.
+        """
+        sym    = nse_symbol.upper().replace(".NS", "").replace(".BO", "")
+        extras: dict = {}
+
+        try:
+            sc = self._screener.get_sme(sym)
+            if sc:
+                for k in ("roce", "roe", "roe_5y", "roe_10y",
+                          "promoter_holding", "fii_holding", "dii_holding",
+                          "sales_growth_pct", "sales_growth_5y", "sales_growth_10y",
+                          "profit_growth_3y", "profit_growth_5y", "profit_growth_10y",
+                          "sales_growth_ttm", "profit_growth_ttm",
+                          "pe_ratio", "book_value", "dividend_yield",
+                          "debt_equity", "market_cap_cr", "current_price",
+                          "current_ratio", "cash_from_operations"):
+                    if k in sc and sc[k] is not None:
+                        extras[k] = sc[k]
+        except Exception:
+            pass
 
         return extras
 
@@ -965,19 +1103,8 @@ class FundamentalsClient:
 # ---------------------------------------------------------------------------
 
 def _build_fundamentals_client() -> FundamentalsClient:
-    try:
-        from config import (                        # type: ignore[import]
-            ALPHA_VANTAGE_API_KEY, APIFY_API_KEY,
-            APIFY_SCREENER_ACTOR_ID,
-            ENABLE_ALPHA_VANTAGE, ENABLE_APIFY_SCREENER,
-        )
-        return FundamentalsClient(
-            alpha_key   = ALPHA_VANTAGE_API_KEY   if ENABLE_ALPHA_VANTAGE  else "",
-            apify_key   = APIFY_API_KEY            if ENABLE_APIFY_SCREENER else "",
-            apify_actor = APIFY_SCREENER_ACTOR_ID  if ENABLE_APIFY_SCREENER else "",
-        )
-    except Exception:
-        return FundamentalsClient()
+    """Create the fundamentals client (NSE live + Screener.in only)."""
+    return FundamentalsClient()
 
 
 def _build_tradingview_client() -> TradingViewClient:

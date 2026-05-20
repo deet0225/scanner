@@ -17,8 +17,8 @@ Technical  : Avg Traded Value 20D > Rs.3 Cr        (softened from 5 Cr)
              20 EMA > 50 EMA                        (daily uptrend)
              Weekly close > weekly 20 EMA          (REQUIRE_WEEKLY_EMA = True)
              Close <= 20 EMA + 2.0 x ATR14         (buy the setup, not the blow-off)
-             Weekly RSI(14) > 58                    (tightened from 55)
-             RSI(14) > 62  AND  RSI SMA(3) rising  (tightened from 58)
+              Weekly RSI(14) > 57                    (relaxed from 60)
+              RSI(14) > 60  AND  RSI SMA(3) rising  (relaxed from 63)
              Gap-up from prev close <= 4%           (avoid gap blow-offs)
              +DI > -DI  AND  ADX(14) > 25          (tightened from 22)
              Closing range >= 65%                   (tightened from 60%)
@@ -42,16 +42,13 @@ DEBT_EQUITY_MAX         = 300.0            # D/E < 3.0  (Yahoo format: ratio x10
 # swing trader can enter/exit a position. The tight momentum gates (RSI 62+,
 # ADX 25+, 4% market outperform, 65% closing range) are the real quality
 # filter — the liquidity bar is just an exit-ability sanity check.
-AVG_TRADED_VALUE_20D_MIN    = 30_000_000   # Rs.3 Cr  (softened from 5 Cr)
-MEDIAN_TRADED_VALUE_20D_MIN = 10_000_000   # Rs.1 Cr  (softened from 2 Cr)
+AVG_TRADED_VALUE_20D_MIN    = 50_000_000   # Rs.5 Cr  (raised from 3 Cr)
+MEDIAN_TRADED_VALUE_20D_MIN = 10_000_000   # Rs.1 Cr
 
-# 50th percentile = above-average volume day. The tight momentum criteria
-# (RSI 62+, ADX 25+, closing range 65%) already weed out weak setups, so the
-# volume bar can be the median level rather than the top-40% level.
-REL_VOL_PERCENTILE_MIN      = 50           # softened from 60
-# 0.7 standard deviations above baseline. Steady institutional accumulation in
-# momentum leaders often shows consistent 0.5–1.0σ volume — not sudden spikes.
-VOLUME_ZSCORE_MIN           = 0.7          # softened from 1.0
+# 60th percentile = clearly above-average volume day (institutional interest).
+REL_VOL_PERCENTILE_MIN      = 60           # restored from 50 (was softened)
+# 1.0 standard deviations above baseline = genuine volume expansion, not noise.
+VOLUME_ZSCORE_MIN           = 1.0          # restored from 0.7 (was softened)
 
 # Number of recent candles to average for volume checks (Filters 3 & 12a).
 # Using 3 days instead of 1 eliminates single-candle noise and handles intraday
@@ -63,22 +60,21 @@ VOLUME_LOOKBACK_DAYS = 3
 # Volatility / ATR thresholds
 # --------------------------------------------------------------------------- #
 ATR_RATIO_MAX       = 0.88
-# 2.0×ATR ceiling: buy the setup near the EMA, not the overextended blow-off.
-# A stock within 2 ATRs of its 20 EMA still has room to run; beyond that the
-# risk:reward deteriorates rapidly for a 1-10 day hold.
-EMA_ATR_MULTIPLIER  = 2.0    # was 2.5
+# 1.5×ATR ceiling: tighter than 2.0× — only buy when price is near the EMA,
+# not already extended. Better R:R entering close to the 20-day EMA support.
+EMA_ATR_MULTIPLIER  = 1.5    # was 2.0 — tighter overextension gate
 REQUIRE_EMA_ATR_CEILING = True
 
 # --------------------------------------------------------------------------- #
 # Structural filter toggles
 # --------------------------------------------------------------------------- #
-REQUIRE_HH20_BREAKOUT    = False  # keep off — allows pullback-to-EMA entries
-REQUIRE_ATR_CONTRACTION  = False  # keep off — strong trends have expanding ATR
-REQUIRE_RSI_SMA3_RISING  = True   # ON — RSI must be accelerating, not flat/falling
+REQUIRE_HH20_BREAKOUT    = False  # off — allows EMA-pullback entries
+REQUIRE_ATR_CONTRACTION  = False  # off — strong trends have expanding ATR
+REQUIRE_RSI_SMA3_RISING  = True   # ON — RSI must be accelerating, not stalling
                                    # Eliminates stocks where RSI > 58 but momentum stalling
 
 REQUIRE_MEDIAN_TV_20D   = False
-REQUIRE_CLOSING_RANGE   = True    # ON — close must be in upper 60% of day's range
+REQUIRE_CLOSING_RANGE   = True    # ON — close in upper 35% of day's range
                                    # Stocks closing in the lower half signal weak hands
 REQUIRE_MEDIAN_TV_TREND = False
 REQUIRE_PRICE_PROXIMITY = False
@@ -86,46 +82,43 @@ REQUIRE_PRICE_PROXIMITY = False
 # --------------------------------------------------------------------------- #
 # Swing-trade early-entry / confirmation flags
 # --------------------------------------------------------------------------- #
-REQUIRE_WEEKLY_EMA    = True   # ON — weekly close must be above weekly 20 EMA.
-                                #   Ensures the larger weekly trend is fully confirmed.
-                                #   Combined with weekly RSI > 55 this filters out
-                                #   stocks in weekly downtrends making day-trade bounces.
-REQUIRE_RS_UPTREND    = False  # keep off — 3% momentum outperform already covers RS
-REQUIRE_ADX_THRESHOLD = True   # ON — ADX > 22 (established, not just starting trend)
-REQUIRE_FUNDAMENTALS  = False  # keep off — swing trade, price action matters
+REQUIRE_WEEKLY_EMA    = True   # ON — weekly close above weekly 20 EMA
+REQUIRE_RS_UPTREND    = True   # ON — RS SMA(10) > RS SMA(20): multi-week RS leadership
+                                #   Eliminates stocks with a single-week RS spike but
+                                #   declining relative-strength trend over 2+ weeks.
+REQUIRE_ADX_THRESHOLD = True   # ON — ADX > 25 (established directional trend)
+REQUIRE_FUNDAMENTALS  = False  # off — swing trade: price action is the signal
 
 # --------------------------------------------------------------------------- #
 # RSI thresholds
 # --------------------------------------------------------------------------- #
-# RSI 62+ = stock is clearly in a strong momentum phase with room to continue.
-# Weekly RSI 58+ = weekly chart is in a firmly bullish momentum phase.
-RSI_MIN        = 62   # tightened from 58
-WEEKLY_RSI_MIN = 58   # tightened from 55
+# RSI 60+ = momentum stock building conviction (relaxed from 63 to allow more setups).
+# Weekly RSI 57+ = weekly chart bullish — above midpoint without requiring full steam.
+RSI_MIN        = 60   # relaxed from 63
+WEEKLY_RSI_MIN = 57   # relaxed from 60
 
 # --------------------------------------------------------------------------- #
 # ADX threshold
 # --------------------------------------------------------------------------- #
-# ADX > 25 = clearly directional trend with conviction (not boundary zone).
-ADX_MIN = 25   # tightened from 22
+# ADX > 25 = validated directional trend.
+ADX_MIN = 25
 
 # --------------------------------------------------------------------------- #
 # Momentum / RS thresholds
 # --------------------------------------------------------------------------- #
-# 4% outperformance = stock is a clear market leader, not just keeping pace.
-MOMENTUM_OUTPERFORM_MIN = 0.04   # tightened from 0.03 (4% above index over 20 days)
-# 3% above sector average = dominant name within its sector, not just top-quartile.
-SECTOR_OUTPERFORM_MIN   = 3.0    # tightened from 2.0
+# 5% outperformance = stock is a dominant market leader, not just keeping pace.
+MOMENTUM_OUTPERFORM_MIN = 0.05   # raised from 0.04 (5% above index over 20 days)
+# 4% above sector = clear sector leader, not just top-quartile in a rising sector.
+SECTOR_OUTPERFORM_MIN   = 4.0    # raised from 3.0
 
 # --------------------------------------------------------------------------- #
 # Price structure thresholds
 # --------------------------------------------------------------------------- #
 # 65% closing range = close in upper 35% of the day's High-Low range.
-# Stronger threshold confirms dominant intraday buying and institutional accumulation.
-CLOSING_RANGE_MIN   = 0.65   # tightened from 0.60
+CLOSING_RANGE_MIN   = 0.65
 PRICE_PROXIMITY_MAX = 0.30
-# 4% gap-up limit: larger gaps often fill within 1-5 days, creating immediate
-# stop-out risk for swing traders entering on the gap day.
-GAP_UP_MAX          = 0.04   # was 0.05
+# 3% gap-up limit: tightened from 4% — larger gaps dramatically worsen fill quality.
+GAP_UP_MAX          = 0.03   # was 0.04
 
 # --------------------------------------------------------------------------- #
 # Regime check behaviour
