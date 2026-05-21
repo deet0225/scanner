@@ -129,15 +129,21 @@ logger = logging.getLogger(__name__)
 # Momentum-only scan thresholds
 # Defined here (not in config) so _analyze_momentum() can use them without
 # circular imports.  main.py imports these directly to stay in sync.
+#
+# Thresholds are deliberately a step BELOW the swing-trade gates so that
+# nascent momentum is captured BEFORE the move becomes obvious.  Quality is
+# maintained by mandatory rising-trend confirmation filters (RSI SMA-3
+# rising, MACD histogram expanding, ADX and weekly RSI trending up) which
+# together ensure only genuinely strengthening setups pass.
 # ---------------------------------------------------------------------------
-MOM_RSI_MIN   = 62.0   # RSI-14 — strong daily momentum zone
-MOM_WRSI_MIN  = 60.0   # Weekly RSI-14 — broader trend confirmation (was 55)
-MOM_ADX_MIN   = 25.0   # ADX — proper trend established (was 22; <25 = no trend)
-MOM_VOLZ_MIN  = 0.8    # Volume Z-score — clearly above-average activity (was 0.5)
-MOM_RS_MIN    = 3.0    # RS outperformance vs benchmark (%) — clear leader (was 1.5)
-MOM_RET20_MIN = 5.0    # 20-day absolute return floor (%) — no weak movers (was 1.5)
-MOM_RET5_MIN  = 0.0    # 5-day return must be non-negative (not losing last week)
-MOM_TV_MIN_CR = 2.0    # Min avg daily traded value (Crores) — decent liquidity (was 0.6)
+MOM_RSI_MIN   = 60.0   # RSI-14 — early momentum zone (was 62; catches sooner)
+MOM_WRSI_MIN  = 55.0   # Weekly RSI-14 — weekly trend turning bullish (was 60)
+MOM_ADX_MIN   = 22.0   # ADX — trend just establishing (was 25; <20 = directionless)
+MOM_VOLZ_MIN  = 0.8    # Volume Z-score — above-average accumulation (was 0.8)
+MOM_RS_MIN    = 2.5    # RS outperformance vs benchmark (%) — emerging leader (was 3.0)
+MOM_RET20_MIN = 3.0    # 20-day absolute return floor (%) — stock is moving (was 5.0)
+MOM_RET5_MIN  = 0.0    # 5-day return must be non-negative (not rolling over)
+MOM_TV_MIN_CR = 2.0    # Min avg daily traded value (Crores) — decent liquidity
 
 # ---------------------------------------------------------------------------
 # Morning Star quality filter thresholds (scan_morning_star only)
@@ -1313,21 +1319,31 @@ class StockScanner:
         except Exception:
             return None
 
-    # -- Momentum-only analysis (6 criteria, no swing filters) -------------------
+    # -- Momentum-only analysis (early-detection, quality-confirmed) -------------
 
     def _analyze_momentum(self, ticker: str, df: "pd.DataFrame",
                           bench_df: "pd.DataFrame | None",
                           scan_date: "datetime.date | None" = None) -> "dict | None":
         """
-        Momentum-only technical check — applies only the 6 strict momentum criteria:
-          1. Avg TV 20D  >= MOM_TV_MIN_CR  (liquidity floor)
-          2. Volume Z-score >= MOM_VOLZ_MIN
-          3. Weekly RSI-14  >= MOM_WRSI_MIN
-          4. RSI-14         >= MOM_RSI_MIN
-          5. ADX-14         >= MOM_ADX_MIN  AND  +DI > −DI  (uptrend direction)
-          6. RS outperf     >= MOM_RS_MIN%  AND  20D return >= MOM_RET20_MIN%
-          7. 5-day return   >= MOM_RET5_MIN%  (not losing money last week)
-          8. EMA alignment  price > EMA-20 > EMA-50  (clean uptrend structure)
+        Early-detection momentum scan — catches nascent up-moves BEFORE they
+        become obvious, while mandatory rising-trend confirmations keep quality high.
+
+        Hard filters (all must pass):
+          1.  Avg TV 20D     >= MOM_TV_MIN_CR          liquidity floor
+          2.  Volume Z-score >= MOM_VOLZ_MIN            above-average accumulation
+          3.  Weekly RSI-14  >= MOM_WRSI_MIN            weekly trend constructive
+          3b. Weekly RSI rising (≤ 2 pt pullback OK)    weekly trend pointing UP
+          4.  RSI-14         >= MOM_RSI_MIN             daily momentum zone
+          4b. RSI SMA-3 rising                          momentum accelerating
+          5.  ADX-14         >= MOM_ADX_MIN             trend establishing
+          5b. +DI > −DI                                 direction is UP
+          5c. ADX rising (≤ 3 pt dip OK)               trend strengthening
+          6.  RS outperf     >= MOM_RS_MIN%             beats benchmark over 20D
+          6b. 20D return     >= MOM_RET20_MIN%          stock is moving
+          7.  5-day return   >= MOM_RET5_MIN%           not rolling over last week
+          8.  Price > EMA-20 > EMA-50                   clean uptrend structure
+          9.  MACD line > Signal AND MACD > 0           bullish zone confirmed
+          9b. MACD histogram not contracting > 30%      momentum still accelerating
 
         scan_date: when provided, df is sliced to <= scan_date before any
           computation, the last candle's date is validated for freshness
@@ -1335,10 +1351,10 @@ class StockScanner:
           the latest candle's OHLCV/volume — matching the behaviour of
           _analyze() so that momentum-only scans are equally accurate.
 
-        Intentionally skips ALL Swing Trade entry conditions (EMA cross, HH20
-        breakout, closing range, price proximity, ATR ceiling, weekly EMA, RS
-        uptrend line, fundamentals, etc.) so strongly trending stocks are
-        captured regardless of entry setup.
+        Intentionally skips ALL Swing Trade entry conditions (HH20 breakout,
+        closing range, price proximity, ATR ceiling, weekly EMA threshold,
+        RS uptrend line, fundamentals, etc.) — only trend and momentum quality
+        filters apply.
         """
         sym = ticker.replace(".NS", "")
 
@@ -1453,6 +1469,23 @@ class StockScanner:
         if rsi_val < MOM_RSI_MIN:
             return None
 
+        # 3b. RSI SMA-3 must be RISING — confirms momentum is accelerating, not stalling.
+        #     This is the key quality gate that separates early genuine movers from
+        #     stocks that briefly touch the RSI threshold and immediately reverse.
+        rsi_sma3 = rsi_s.rolling(3).mean()
+        if len(rsi_sma3.dropna()) >= 2:
+            rsi_sma3_rising = float(rsi_sma3.iloc[-1]) > float(rsi_sma3.iloc[-2])
+            if not rsi_sma3_rising:
+                return None
+
+        # 3c. Weekly RSI must be RISING (not falling) — higher-timeframe trend is
+        #     turning constructive.  Catches early entries by accepting lower absolute
+        #     weekly RSI levels, but only when the weekly trend is pointing UP.
+        if len(w_rsi_s.dropna()) >= 2:
+            w_rsi_prev = float(w_rsi_s.iloc[-2])
+            if w_rsi < w_rsi_prev - 2.0:   # allow tiny noise (< 2 pts pullback is OK)
+                return None
+
         # 5. ADX >= MOM_ADX_MIN  (expensive — checked after cheap filters)
         try:
             with _suppress_ta_stdout():
@@ -1477,6 +1510,15 @@ class StockScanner:
         #     knife stocks that happen to have strong ADX readings.
         if pd.isna(pdi_val) or pd.isna(ndi_val) or pdi_val <= ndi_val:
             return None
+
+        # 5c. ADX must be RISING (trend is strengthening, not exhausting).
+        #     Early detection requires lower absolute ADX (20+) but the ADX must be
+        #     trending upward — a falling ADX below 25 signals a fading trend.
+        if len(adx_res) >= 4:
+            adx_prev3 = float(adx_res[adx_col].iloc[-4])
+            # Require ADX to be at least as high as it was 3 bars ago (or rising)
+            if adx_val < adx_prev3 - 3.0:   # allow small dips (< 3 pts is noise)
+                return None
 
         # 6. RS outperformance and 20D return vs benchmark
         if bench_df is None:
@@ -1516,29 +1558,40 @@ class StockScanner:
         if e20 < e50:         # EMA-20 below EMA-50 → trend not aligned
             return None
 
-        # 9. MACD bullish confirmation: MACD line > Signal line AND MACD > 0
-        #    This eliminates stocks that look strong on RSI/ADX but have already
-        #    peaked — MACD above zero + above signal confirms the trend is still live.
+        # 9. MACD(12,26,9): line > signal AND line > 0 AND histogram not contracting.
+        #    • line > signal:  bullish crossover / still above (trend live)
+        #    • line > 0:       MACD in bull zone — not below zero line
+        #    • histogram not contracting > 30%: momentum still accelerating
+        #      (histogram = line − signal, so if line > signal it is already > 0;
+        #       the contraction check is the meaningful additional quality gate)
         macd_line = macd_signal = macd_hist = None
         try:
             with _suppress_ta_stdout():
                 macd_df = df.ta.macd(fast=12, slow=26, signal=9, append=False)
             if macd_df is not None and not macd_df.empty:
-                macd_col  = "MACD_12_26_9"
-                sig_col   = "MACDs_12_26_9"
-                hist_col  = "MACDh_12_26_9"
+                macd_col = "MACD_12_26_9"
+                sig_col  = "MACDs_12_26_9"
+                hist_col = "MACDh_12_26_9"
                 if all(col in macd_df.columns for col in (macd_col, sig_col, hist_col)):
                     macd_line   = float(macd_df[macd_col].iloc[-1])
                     macd_signal = float(macd_df[sig_col].iloc[-1])
                     macd_hist   = float(macd_df[hist_col].iloc[-1])
         except Exception:
             pass
-        # Hard gate: MACD must be bullish (above signal) and above zero line
+
         if macd_line is not None and macd_signal is not None:
-            if macd_line <= macd_signal:   # bearish crossover / below signal
+            if macd_line <= macd_signal:   # bearish — below signal line
                 return None
-            if macd_line <= 0:             # below zero line — not yet in bull zone
+            if macd_line <= 0:             # below zero line — not in bull zone
                 return None
+            # Histogram contraction check: histogram > 0 is guaranteed by line > signal,
+            # but if it is shrinking by more than 30% the momentum pulse is fading.
+            if macd_hist is not None:
+                hist_series = macd_df["MACDh_12_26_9"].dropna()
+                if len(hist_series) >= 2:
+                    h_prev = float(hist_series.iloc[-2])
+                    if h_prev > 0 and macd_hist < h_prev * 0.70:
+                        return None   # histogram contracting > 30% — momentum fading
 
         # --- All filters passed; compute display-only metrics ---
 

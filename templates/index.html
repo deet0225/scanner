@@ -537,6 +537,7 @@
         <th style="width:80px;">From</th>
         <th>Ticker / Name</th>
         <th>Price (&#8377;)</th>
+        <th title="Stop Loss — structural support level just below entry price. Place SL order at or just below this level.">Stop&thinsp;Loss</th>
         <th title="RSI-14 daily / Weekly RSI-14">RSI&thinsp;14&thinsp;/&thinsp;W</th>
         <th title="ADX-14 — directional strength">ADX&thinsp;14</th>
         <th title="20-Day return vs benchmark index">20D&thinsp;Ret</th>
@@ -547,7 +548,7 @@
         <th title="Sector">Sector</th>
         <th title="Pure Momentum Score (RSI 30 + RS 25 + ADX 20 + MACD 10 + wRSI 10 + Vol 5 = max 100)">Mom Score</th>
       </tr></thead>
-      <tbody id="mom-results-body"><tr><td colspan="13">
+      <tbody id="mom-results-body"><tr><td colspan="14">
         <div class="empty-state">
           <i class="bi bi-lightning-charge fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
           Click <strong>&#128200; Stock Momentum</strong> tab or <strong>Refresh</strong> to load.
@@ -559,15 +560,16 @@
   <!-- Legend -->
   <div style="padding:8px 18px 14px;font-size:0.72rem;color:var(--text-muted);display:flex;gap:14px;flex-wrap:wrap;">
     <span style="font-weight:700;color:var(--text-primary);">Momentum Filters (all must pass):</span>
-    <span>RSI&#8805;<span id="mom-leg-rsi" style="color:var(--green);">60</span></span>
-    <span>wRSI&#8805;<span id="mom-leg-wrsi" style="color:var(--green);">55</span></span>
-    <span>ADX&#8805;<span id="mom-leg-adx" style="color:var(--green);">22</span></span>
-    <span>VolZ&#8805;<span id="mom-leg-volz" style="color:var(--green);">0.5</span></span>
-    <span>RS&#8805;<span id="mom-leg-rs" style="color:var(--green);">+1.5%</span></span>
-    <span>20D&#8805;<span id="mom-leg-ret" style="color:var(--green);">+1.5%</span></span>
-    <span style="margin-left:8px;">Liq min: <span style="color:var(--green);">&#8377;0.6&thinsp;Cr</span></span>
+    <span>RSI&#8805;<span id="mom-leg-rsi" style="color:var(--green);">58</span> &amp; rising</span>
+    <span>wRSI&#8805;<span id="mom-leg-wrsi" style="color:var(--green);">55</span> &amp; rising</span>
+    <span>ADX&#8805;<span id="mom-leg-adx" style="color:var(--green);">20</span> &amp; rising</span>
+    <span>VolZ&#8805;<span id="mom-leg-volz" style="color:var(--green);">0.6</span></span>
+    <span>RS&#8805;<span id="mom-leg-rs" style="color:var(--green);">+2.5%</span></span>
+    <span>20D&#8805;<span id="mom-leg-ret" style="color:var(--green);">+3%</span></span>
+    <span style="color:var(--blue);">MACD&gt;0 &amp; expanding</span>
+    <span style="margin-left:8px;">Liq min: <span style="color:var(--green);">&#8377;2&thinsp;Cr</span></span>
     <span style="margin-left:8px;">&#x25CF; <span class="from-n500">Nifty 500</span> &nbsp; &#x25CF; <span class="from-mc250">Microcap 250</span></span>
-    <span style="margin-left:8px;">Mom Score = RSI(35)+wRSI(15)+ADX(20)+RS(20)+Vol(10) &mdash; max 100</span>
+    <span style="margin-left:8px;">Mom Score = RSI(30)+RS(25)+ADX(20)+MACD(10)+wRSI(10)+Vol(5) &mdash; max 100</span>
   </div>
 </div>
 
@@ -1642,7 +1644,7 @@ function momLoad() {
       if (btn)    btn.classList.remove('scanning');
       if (loadEl) loadEl.style.display = 'none';
       document.getElementById('mom-results-body').innerHTML =
-        '<tr><td colspan="13"><div class="empty-state">' +
+        '<tr><td colspan="14"><div class="empty-state">' +
         '<i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
         'Error: ' + err + '</div></td></tr>';
     });
@@ -1670,7 +1672,7 @@ function renderMomentum(stocks, meta) {
         'No momentum stocks found' +
         (asOf ? ' for ' + asOf : ' today') + '.<br>' +
         '<small style="color:var(--text-muted);">Try a different date or check back after the next trading session.</small>';
-    tbody.innerHTML = '<tr><td colspan="13"><div class="empty-state">' + msg + '</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' + msg + '</div></td></tr>';
     return;
   }
 
@@ -1690,6 +1692,23 @@ function renderMomentum(stocks, meta) {
     var priceStr = price != null
       ? '<span class="price-val">&#8377;' + Number(price).toLocaleString('en-IN') + '</span>'
       : '--';
+
+    // Stop Loss
+    var slVal   = s.stop_loss != null ? s.stop_loss : null;
+    var slCell  = '--';
+    if (slVal != null && price != null) {
+      var slRisk   = price > 0 ? ((slVal - price) / price * 100) : 0;
+      var slRiskStr = slRisk.toFixed(2);
+      var slCol    = 'var(--red)';
+      slCell =
+        '<span style="color:' + slCol + ';font-weight:700;font-family:monospace;font-size:0.88rem;" ' +
+        'title="Stop Loss: ₹' + Number(slVal).toLocaleString('en-IN') + '\nRisk from entry: ' + slRiskStr + '%\nPlace SL just below this structural support level.">' +
+        '&#8377;' + Number(slVal).toLocaleString('en-IN') +
+        '</span>' +
+        '<div class="sector-sub" style="color:var(--red);font-size:0.68rem;">' + slRiskStr + '% risk</div>';
+    } else if (slVal != null) {
+      slCell = '<span style="color:var(--red);font-family:monospace;">&#8377;' + Number(slVal).toLocaleString('en-IN') + '</span>';
+    }
 
     // RSI / WRSI
     var rsi   = s.rsi    != null ? Number(s.rsi).toFixed(1)    : '--';
@@ -1855,10 +1874,10 @@ function renderMomentum(stocks, meta) {
       '<td>' +
         '<div class="ticker-sym">' + ticker + '</div>' +
         '<div class="company-name">' + (s.name || '') + '</div>' +
-        (s.stop_loss != null ? '<div class="sl-sub">SL:&#8377;' + Number(s.stop_loss).toLocaleString('en-IN') + '</div>' : '') +
         candleDateCell +
       '</td>' +
       '<td>' + priceStr + '</td>' +
+      '<td>' + slCell   + '</td>' +
       '<td>' + rsiCell + '</td>' +
       '<td>' + adxCell + '</td>' +
       '<td>' + r20Cell + '</td>' +

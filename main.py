@@ -1916,19 +1916,24 @@ async def get_stock_momentum(
 
     **Completely independent of Swing Trade.**  Uses a dedicated
     momentum-only scan (scanner.scan(momentum_only=True)) that applies
-    only the 6 momentum criteria — no fundamentals, no EMA cross, no
+    only momentum criteria — no fundamentals, no EMA cross, no
     HH20 breakout, no closing range, no sector outperformance, no
     composite scoring.
 
     Pass ?date=YYYY-MM-DD for historical results.
 
     Filters (all must pass):
-      RSI-14  >= 60    (strong momentum zone)
-      Weekly RSI >= 55 (weekly trend confirmation)
-      ADX-14  >= 22    (directional trend established)
-      Vol Z-score >= 0.5 (above-average volume)
-      RS outperf >= 1.5% vs index (market leadership)
-      20D return >= 1.5% absolute (positive drift)
+      RSI-14  >= 58    (early momentum zone — catches sooner than 62)
+      RSI SMA-3 rising (momentum accelerating, not stalling)
+      Weekly RSI >= 55 (weekly trend turning constructive)
+      Weekly RSI rising (higher-timeframe trend pointing UP)
+      ADX-14  >= 23    (trend establishing — catches earlier setups)
+      ADX rising       (trend strengthening, not exhausting)
+      Vol Z-score >= 0.8 (above-average accumulation volume)
+      RS outperf >= 2.5% vs index (emerging market leadership)
+      20D return >= 3% absolute (stock is moving)
+      MACD > Signal AND MACD > 0 (bullish zone confirmation)
+      MACD histogram positive AND not contracting > 30% (acceleration)
     """
     target_date = None
     if date:
@@ -2003,6 +2008,11 @@ async def get_stock_momentum(
     # Compute momentum score and sort
     for s in all_stocks:
         s["mom_score"] = _mom_score(s)
+        # Enrich with sector from fundamentals cache (best-effort — no blocking call)
+        sym = s.get("display_ticker") or (s.get("ticker") or "").replace(".NS", "")
+        fund = _fund_data.get(sym) or _fund_data.get(sym + ".NS") or {}
+        if fund.get("sector"):
+            s["sector"] = fund["sector"]
     all_stocks.sort(key=lambda x: x["mom_score"], reverse=True)
     filtered = all_stocks
 
