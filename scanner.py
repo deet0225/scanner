@@ -74,17 +74,51 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
-import pandas_ta  # noqa -- registers df.ta accessor
-# Silence pandas_ta log output (does not affect calculation correctness)
-logging.getLogger("pandas_ta").setLevel(logging.CRITICAL)
+import ta as _ta_lib  # pure-Python TA library (pandas_ta replacement, supports Python 3.14)
 
-# pandas_ta uses direct print() calls internally (not the logging module).
-# Redirect stdout during every df.ta.* call so those Series reprs never
-# appear on the console.
+# No-op context manager — kept so call sites need no changes
 @contextlib.contextmanager
 def _suppress_ta_stdout():
-    with contextlib.redirect_stdout(io.StringIO()):
-        yield
+    yield
+
+
+def _ta_atr(df, length=14):
+    """Drop-in replacement for df.ta.atr(length=N, append=False)."""
+    h = df["High"]  if "High"  in df.columns else df["high"]
+    l = df["Low"]   if "Low"   in df.columns else df["low"]
+    c = df["Close"] if "Close" in df.columns else df["close"]
+    return _ta_lib.volatility.AverageTrueRange(
+        high=h, low=l, close=c, window=length, fillna=False
+    ).average_true_range()
+
+
+def _ta_adx(df, length=14):
+    """Drop-in replacement for df.ta.adx(length=N, append=False).
+    Returns DataFrame with columns ADX_{N}, DMP_{N}, DMN_{N}."""
+    h = df["High"]  if "High"  in df.columns else df["high"]
+    l = df["Low"]   if "Low"   in df.columns else df["low"]
+    c = df["Close"] if "Close" in df.columns else df["close"]
+    ind = _ta_lib.trend.ADXIndicator(high=h, low=l, close=c, window=length, fillna=False)
+    return pd.DataFrame({
+        f"ADX_{length}": ind.adx(),
+        f"DMP_{length}": ind.adx_pos(),
+        f"DMN_{length}": ind.adx_neg(),
+    })
+
+
+def _ta_macd(df, fast=12, slow=26, signal=9):
+    """Drop-in replacement for df.ta.macd(fast=.., slow=.., signal=.., append=False).
+    Returns DataFrame with columns MACD_F_S_SIG, MACDs_F_S_SIG, MACDh_F_S_SIG."""
+    c = df["Close"] if "Close" in df.columns else df["close"]
+    ind = _ta_lib.trend.MACD(
+        close=c, window_slow=slow, window_fast=fast, window_sign=signal, fillna=False
+    )
+    tag = f"{fast}_{slow}_{signal}"
+    return pd.DataFrame({
+        f"MACD_{tag}":  ind.macd(),
+        f"MACDs_{tag}": ind.macd_signal(),
+        f"MACDh_{tag}": ind.macd_diff(),
+    })
 
 from tickers import NIFTY500_TICKERS
 from config import (
@@ -896,12 +930,12 @@ class StockScanner:
                         cl = bse_row["low"]
                         co = bse_row["open"]
 
-        # ---- ATR via pandas_ta ---------------------------------------------
+        # ---- ATR ----------------------------------------------------------------
         try:
             with _suppress_ta_stdout():
-                atr5_s  = df.ta.atr(length=5,  append=False)
-                atr14_s = df.ta.atr(length=14, append=False)
-                atr20_s = df.ta.atr(length=20, append=False)
+                atr5_s  = _ta_atr(df, length=5)
+                atr14_s = _ta_atr(df, length=14)
+                atr20_s = _ta_atr(df, length=20)
         except Exception as exc:
             logger.debug("%-12s SKIP  ATR error: %s", sym, exc)
             return None
@@ -1111,13 +1145,13 @@ class StockScanner:
                          sym, gap * 100, GAP_UP_MAX * 100)
             return None
 
-        # Filter 15: ADX(14) > ADX_MIN  AND  +DI > -DI  (pandas_ta)
+        # Filter 15: ADX(14) > ADX_MIN  AND  +DI > -DI
         # When REQUIRE_ADX_THRESHOLD=False (swing default): only +DI > -DI is enforced.
         # This allows early breakout entries where ADX is still rising from low levels
         # (trend is starting) rather than requiring an "established" trend (ADX > 20).
         try:
             with _suppress_ta_stdout():
-                adx_res = df.ta.adx(length=ADX_PERIOD, append=False)
+                adx_res = _ta_adx(df, length=ADX_PERIOD)
         except Exception as exc:
             logger.debug("%-12s SKIP  ADX error: %s", sym, exc)
             return None
@@ -1489,7 +1523,7 @@ class StockScanner:
         # 5. ADX >= MOM_ADX_MIN  (expensive — checked after cheap filters)
         try:
             with _suppress_ta_stdout():
-                adx_res = df.ta.adx(length=ADX_PERIOD, append=False)
+                adx_res = _ta_adx(df, length=ADX_PERIOD)
         except Exception:
             return None
         if adx_res is None or adx_res.empty:
@@ -1567,7 +1601,7 @@ class StockScanner:
         macd_line = macd_signal = macd_hist = None
         try:
             with _suppress_ta_stdout():
-                macd_df = df.ta.macd(fast=12, slow=26, signal=9, append=False)
+                macd_df = _ta_macd(df, fast=12, slow=26, signal=9)
             if macd_df is not None and not macd_df.empty:
                 macd_col = "MACD_12_26_9"
                 sig_col  = "MACDs_12_26_9"
@@ -1615,7 +1649,7 @@ class StockScanner:
         atr14_val = None
         try:
             with _suppress_ta_stdout():
-                atr14_s = df.ta.atr(length=14, append=False)
+                atr14_s = _ta_atr(df, length=14)
             if atr14_s is not None and not atr14_s.dropna().empty:
                 atr14_val  = float(atr14_s.iloc[-1])
                 cl         = float(lo.iloc[-1])
@@ -1794,9 +1828,9 @@ class StockScanner:
         # ── ATR ─────────────────────────────────────────────────────────────
         try:
             with _suppress_ta_stdout():
-                atr5_s  = df.ta.atr(length=5,  append=False)
-                atr14_s = df.ta.atr(length=14, append=False)
-                atr20_s = df.ta.atr(length=20, append=False)
+                atr5_s  = _ta_atr(df, length=5)
+                atr14_s = _ta_atr(df, length=14)
+                atr20_s = _ta_atr(df, length=20)
             atr5  = float(atr5_s.iloc[-1])  if atr5_s  is not None else float("nan")
             atr14 = float(atr14_s.iloc[-1]) if atr14_s is not None else float("nan")
             atr20 = float(atr20_s.iloc[-1]) if atr20_s is not None else float("nan")
@@ -2008,7 +2042,7 @@ class StockScanner:
         # ── ADX ─────────────────────────────────────────────────────────────
         try:
             with _suppress_ta_stdout():
-                adx_res = df.ta.adx(length=ADX_PERIOD, append=False)
+                adx_res = _ta_adx(df, length=ADX_PERIOD)
             adx_col = "ADX_%d" % ADX_PERIOD
             pdi_col = "DMP_%d" % ADX_PERIOD
             ndi_col = "DMN_%d" % ADX_PERIOD
