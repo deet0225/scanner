@@ -716,6 +716,20 @@
       <div class="scan-status-txt" style="font-size:0.95rem;">Fetching SME fundamental data&hellip;</div>
       <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">Loading from Screener.in cache &mdash; may take 60–120 s on first run.</div>
     </div>
+    <!-- Background download progress bar (shown while bg_running=true) -->
+    <div id="sme-progress-wrap" style="display:none; padding:6px 14px 8px; border-bottom:1px solid var(--border);">
+      <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.70rem; color:var(--text-muted); margin-bottom:4px;">
+        <span><i class="bi bi-cloud-download me-1" style="color:var(--yellow);"></i>
+          Downloading SME fundamental data &mdash; <span id="sme-progress-label">0 / 0 tickers</span></span>
+        <span id="sme-progress-pct" style="font-weight:700; color:var(--yellow);">0%</span>
+      </div>
+      <div style="background:rgba(255,255,255,0.08); border-radius:6px; height:7px; overflow:hidden;">
+        <div id="sme-progress-bar" style="height:100%; background:linear-gradient(90deg,var(--yellow),var(--green)); border-radius:6px; transition:width 0.5s ease; width:0%;"></div>
+      </div>
+      <div style="font-size:0.65rem; color:var(--text-muted); margin-top:3px; text-align:right;">
+        Table updates automatically every 8 seconds &mdash; no need to click Refresh
+      </div>
+    </div>
     <div class="table-responsive">
       <table><thead><tr>
         <th style="width:38px;">#</th>
@@ -858,6 +872,20 @@
       <div class="spinner-border text-warning mb-3" role="status" style="width:2.5rem;height:2.5rem;"></div>
       <div class="scan-status-txt" style="font-size:0.95rem;">Fetching fundamental data (ROE, Promoter %, Sales Growth)&hellip;</div>
       <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">Fetched from Screener.in cache &mdash; usually instant.</div>
+    </div>
+    <!-- Background download progress bar (shown while bg_running=true) -->
+    <div id="fund-progress-wrap" style="display:none; padding:6px 14px 8px; border-bottom:1px solid var(--border);">
+      <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.70rem; color:var(--text-muted); margin-bottom:4px;">
+        <span><i class="bi bi-cloud-download me-1" style="color:var(--yellow);"></i>
+          Downloading fundamental data &mdash; <span id="fund-progress-label">0 / 0 tickers</span></span>
+        <span id="fund-progress-pct" style="font-weight:700; color:var(--yellow);">0%</span>
+      </div>
+      <div style="background:rgba(255,255,255,0.08); border-radius:6px; height:7px; overflow:hidden;">
+        <div id="fund-progress-bar" style="height:100%; background:linear-gradient(90deg,var(--yellow),var(--green)); border-radius:6px; transition:width 0.5s ease; width:0%;"></div>
+      </div>
+      <div style="font-size:0.65rem; color:var(--text-muted); margin-top:3px; text-align:right;">
+        Table updates automatically every 8 seconds &mdash; no need to click Refresh
+      </div>
     </div>
     <div class="table-responsive">
       <table><thead><tr>
@@ -1128,6 +1156,15 @@ function switchTab(name) {
   if (name !== 'sectors' && _secPollTimer) {
     clearTimeout(_secPollTimer);
     _secPollTimer = null;
+  }
+  // Cancel outstanding fund/sme background poll timers when leaving those tabs
+  if (name !== 'fund' && _fundPollTimer) {
+    clearTimeout(_fundPollTimer);
+    _fundPollTimer = null;
+  }
+  if (name !== 'sme' && _smePollTimer) {
+    clearTimeout(_smePollTimer);
+    _smePollTimer = null;
   }
   activeTab = name;
   ['swing','momentum','morningmom','fund','sme','sectors','search'].forEach(function(t) {
@@ -2150,12 +2187,36 @@ function renderMorningMom(stocks, meta) {
 
 // ══════════════════════════ SME FUNDAMENTALS ══════════════════════════════
 var smeLoaded = false;
+var _smePollTimer = null;   // handle for the active auto-poll setTimeout
+
+function _smeUpdateProgress(j) {
+  var wrap  = document.getElementById('sme-progress-wrap');
+  var bar   = document.getElementById('sme-progress-bar');
+  var label = document.getElementById('sme-progress-label');
+  var pct   = document.getElementById('sme-progress-pct');
+  if (!wrap) return;
+  if (j.bg_running) {
+    var fresh = j.cache_fresh  || 0;
+    var total = j.cache_total  || 1;
+    var done  = Math.round(fresh / total * 100);
+    wrap.style.display   = 'block';
+    bar.style.width      = done + '%';
+    label.textContent    = fresh + ' / ' + total + ' tickers ready';
+    pct.textContent      = done + '%';
+  } else {
+    wrap.style.display   = 'none';
+    bar.style.width      = '100%';
+  }
+}
 
 function smeLoad(forceRefresh) {
   var btn    = document.getElementById('sme-refresh-btn');
   var loadEl = document.getElementById('sme-loading-msg');
   if (btn)    btn.classList.add('scanning');
   if (loadEl) loadEl.style.display = 'flex';
+
+  // Clear any outstanding poll timer so we don't stack timers
+  if (_smePollTimer) { clearTimeout(_smePollTimer); _smePollTimer = null; }
 
   var url = '/api/sme/fundamentals' + (forceRefresh ? '?refresh=1' : '');
   fetch(url)
@@ -2170,19 +2231,26 @@ function smeLoad(forceRefresh) {
       document.getElementById('sme-nse-count').textContent   = (j.nse_count || '--') + ' tickers';
       document.getElementById('sme-bse-count').textContent   = (j.bse_count || '--') + ' tickers';
 
+      // Progress bar
+      _smeUpdateProgress(j);
+
       var fresh = j.cache_fresh != null ? j.cache_fresh : '--';
       var total = j.cache_total != null ? j.cache_total : '--';
       var bgMsg = j.bg_running
-        ? ' &middot; <span style="color:var(--yellow);">⟳ updating ' + j.stale_count + ' in background…</span>'
+        ? ' &middot; <span style="color:var(--yellow);">⟳ downloading ' + j.stale_count + ' tickers…</span>'
         : (j.stale_count > 0
           ? ' &middot; <span style="color:var(--text-muted);">' + j.stale_count + ' stale</span>'
           : ' &middot; <span style="color:var(--green);">✓ all fresh</span>');
       document.getElementById('sme-source').innerHTML = 'Cache: ' + fresh + '/' + total + bgMsg;
 
-      if (j.bg_running && (j.total || 0) < 3)
-        setTimeout(function() { if (activeTab === 'sme') smeLoad(false); }, 8000);
-
       renderSME(j.stocks || []);
+
+      // Always keep polling while background worker is active
+      if (j.bg_running) {
+        _smePollTimer = setTimeout(function() {
+          if (activeTab === 'sme') smeLoad(false);
+        }, 8000);
+      }
     })
     .catch(function(err) {
       if (btn)    btn.classList.remove('scanning');
@@ -2198,9 +2266,9 @@ function renderSME(stocks) {
   if (!stocks || !stocks.length) {
     tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' +
       '<i class="bi bi-buildings fs-2 d-block mb-2"></i>' +
-      '<strong>Fetching SME fundamental data…</strong><br>' +
-      '<small style="color:var(--text-muted);">Data is being downloaded from Screener.in in background.<br>' +
-      'This takes ~60–120 seconds on first run. <strong>Click Refresh</strong> in a moment.</small></div></td></tr>';
+      '<strong>Downloading SME fundamental data…</strong><br>' +
+      '<small style="color:var(--text-muted);">Progress bar above shows download status.<br>' +
+      'Table will populate automatically as data arrives — no action needed.</small></div></td></tr>';
     return;
   }
   var medals = ['🥇','🥈','🥉'];
@@ -2663,14 +2731,41 @@ function renderSectors(j) {
 
 // ══════════════════════════ FUNDAMENTALS TAB ══════════════════════════════
 var _fundLoaded = false;
+var _fundPollTimer = null;   // handle for the active auto-poll setTimeout
+
+function _fundUpdateProgress(j) {
+  var wrap  = document.getElementById('fund-progress-wrap');
+  var bar   = document.getElementById('fund-progress-bar');
+  var label = document.getElementById('fund-progress-label');
+  var pct   = document.getElementById('fund-progress-pct');
+  if (!wrap) return;
+  if (j.bg_running) {
+    var fresh = j.cache_fresh  || 0;
+    var total = j.cache_total  || 1;
+    var done  = Math.round(fresh / total * 100);
+    wrap.style.display   = 'block';
+    bar.style.width      = done + '%';
+    label.textContent    = fresh + ' / ' + total + ' tickers ready';
+    pct.textContent      = done + '%';
+  } else {
+    wrap.style.display   = 'none';
+    bar.style.width      = '100%';
+  }
+}
 
 function fundLoad(force) {
   var btn = document.getElementById('fund-refresh-btn');
   if (btn) btn.classList.add('scanning');
   var loadEl = document.getElementById('fund-loading-msg');
   if (loadEl) { loadEl.style.display = 'block'; }
-  document.getElementById('fund-results-body').innerHTML =
-    '<tr><td colspan="10"><div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2"></i>Loading…</div></td></tr>';
+  // Only blank the table on explicit force-refresh; silent polls keep existing rows visible
+  if (force) {
+    document.getElementById('fund-results-body').innerHTML =
+      '<tr><td colspan="13"><div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2"></i>Loading…</div></td></tr>';
+  }
+
+  // Clear any outstanding poll timer so we don't stack timers
+  if (_fundPollTimer) { clearTimeout(_fundPollTimer); _fundPollTimer = null; }
 
   var url = '/api/fundamentals' + (force ? '?refresh=1' : '');
   fetch(url)
@@ -2680,24 +2775,33 @@ function fundLoad(force) {
       if (loadEl) loadEl.style.display = 'none';
       _fundLoaded = true;
       document.getElementById('fund-count').textContent = j.total || 0;
-      document.getElementById('fund-result-count').textContent = (j.stocks || []).length + ' stocks (of ' + (j.total_scored || 0) + ' scored)';
+      document.getElementById('fund-result-count').textContent =
+        (j.stocks || []).length + ' stocks (of ' + (j.total_scored || 0) + ' scored)';
 
-      // Show cache coverage + background status
-      var fresh  = j.cache_fresh != null ? j.cache_fresh : '--';
-      var total  = j.cache_total != null ? j.cache_total : '--';
-      var bgMsg  = j.bg_running
-        ? ' · <span style="color:var(--yellow);">⟳ updating ' + j.stale_count + ' in background…</span>'
+      // Progress bar (show while bg worker is downloading)
+      _fundUpdateProgress(j);
+
+      // Cache status line
+      var fresh = j.cache_fresh != null ? j.cache_fresh : '--';
+      var total = j.cache_total != null ? j.cache_total : '--';
+      var bgMsg = j.bg_running
+        ? ' · <span style="color:var(--yellow);">⟳ downloading ' + j.stale_count + ' tickers…</span>'
         : (j.stale_count > 0
-          ? ' · <span style="color:var(--text-muted);">' + j.stale_count + ' stale, refreshing…</span>'
+          ? ' · <span style="color:var(--text-muted);">' + j.stale_count + ' stale</span>'
           : ' · <span style="color:var(--green);">✓ all fresh</span>');
       document.getElementById('fund-source').innerHTML =
         'Cache: ' + fresh + '/' + total + ' tickers' + bgMsg;
 
-      // Auto-retry after 6s if background is running and we have few results
-      if (j.bg_running && (j.total || 0) < 5) {
-        setTimeout(function() { if (activeTab === 'fund') fundLoad(false); }, 6000);
-      }
+      // Render whatever is available now (may be partial on first load)
       renderFundamentals(j.stocks || []);
+
+      // Always keep polling while background worker is active — this is what
+      // drives the live progress bar and table updates as more tickers finish.
+      if (j.bg_running) {
+        _fundPollTimer = setTimeout(function() {
+          if (activeTab === 'fund') fundLoad(false);
+        }, 8000);
+      }
     })
     .catch(function(err) {
       if (btn) btn.classList.remove('scanning');
@@ -2720,9 +2824,9 @@ function renderFundamentals(stocks) {
   if (!stocks || !stocks.length) {
     tbody.innerHTML = '<tr><td colspan="13"><div class="empty-state">' +
       '<i class="bi bi-gem fs-2 d-block mb-2"></i>' +
-      '<strong>Fetching fundamental data for 750 tickers…</strong><br>' +
-      '<small style="color:var(--text-muted);">Data is being downloaded from NSE &amp; Screener.in in background.<br>' +
-      'This takes ~60–120 seconds on first run. <strong>Click Refresh</strong> in a moment.</small></div></td></tr>';
+      '<strong>Downloading fundamental data for 750 tickers…</strong><br>' +
+      '<small style="color:var(--text-muted);">Progress bar above shows download status.<br>' +
+      'Table will populate automatically as data arrives — no action needed.</small></div></td></tr>';
     return;
   }
   var medals = ['🥇','🥈','🥉'];
