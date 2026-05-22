@@ -2220,7 +2220,14 @@ function smeLoad(forceRefresh) {
 
   var url = '/api/sme/fundamentals' + (forceRefresh ? '?refresh=1' : '');
   fetch(url)
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (!r.ok || !r.headers.get('content-type').includes('application/json')) {
+        return r.text().then(function(t) {
+          throw new Error('HTTP ' + r.status + ' — server returned non-JSON: ' + t.substring(0, 200));
+        });
+      }
+      return r.json();
+    })
     .then(function(j) {
       if (btn)    btn.classList.remove('scanning');
       if (loadEl) loadEl.style.display = 'none';
@@ -2769,7 +2776,14 @@ function fundLoad(force) {
 
   var url = '/api/fundamentals' + (force ? '?refresh=1' : '');
   fetch(url)
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      if (!r.ok || !r.headers.get('content-type').includes('application/json')) {
+        return r.text().then(function(t) {
+          throw new Error('HTTP ' + r.status + ' — server returned non-JSON: ' + t.substring(0, 200));
+        });
+      }
+      return r.json();
+    })
     .then(function(j) {
       if (btn) btn.classList.remove('scanning');
       if (loadEl) loadEl.style.display = 'none';

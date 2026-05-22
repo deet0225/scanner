@@ -6,7 +6,7 @@ Data source : yfinance NSE (.NS)             (primary – fast batch download)
               Alpha Vantage                  (3rd fallback – needs free API key)
               yfinance BSE (.BO)              (4th fallback – existing)
               BSE / NSE Bhavcopy CSV          (latest-day volume/price patch)
-ADX         : pandas_ta
+ADX         : ta library (pure-Python, replaces pandas_ta — compatible with Python 3.14+)
 RS ratio    : (1 + stock_ret20d) / (1 + index_ret20d)
 
 Filter pipeline
@@ -32,7 +32,7 @@ Per-stock technical:
       Volume Z-Score uses 3-day rolling avg (VOLUME_LOOKBACK_DAYS=3)
   13. RS Ratio SMA(10) > RS Ratio SMA(20)
   14. Gap-up from prev close <= 4%
-  15. ADX(14) > 25  AND  +DI > -DI  [pandas_ta]     (tightened from 22)
+  15. ADX(14) > 25  AND  +DI > -DI  [ta library]     (tightened from 22)
 
 Per-stock fundamental:
   16. Market Cap > Rs.1200 Cr

@@ -8,7 +8,7 @@ requests>=2.31.0
 urllib3>=2.0.0
 apscheduler>=3.10.0
 pytz>=2024.1
-pandas_ta>=0.3.14b
+ta>=0.11.0                  # pure-Python TA library (replaces pandas_ta — supports Python 3.14+)
 # ── Additional data sources for improved accuracy ──────────────────────────
 nsepython>=2.7              # NSE India live + historical (direct API, authoritative)
 apify-client>=1.7.0         # Apify actor runner  (screener.in Apify actor, optional)
