@@ -699,7 +699,8 @@
       Refresh
     </button>
     <div style="margin-left:auto; font-size:0.72rem; color:var(--text-muted); padding:5px 12px;">
-      SME Quality Rankings &mdash; NSE Emerge &amp; BSE SME IPO &mdash; Low Debt &middot; Positive CFO &middot; High ROCE &middot; Growth
+      SME High-Growth Rankings &mdash; NSE Emerge &amp; BSE SME IPO &mdash;
+      ROCE&nbsp;≥15% &middot; ROE&nbsp;≥15% &middot; Revenue&nbsp;Growth&nbsp;≥20% &middot; Profit&nbsp;Growth&nbsp;≥20% &middot; CFO&nbsp;&gt;0
     </div>
   </div>
 
@@ -707,14 +708,17 @@
     <div class="card-head">
       <div style="font-weight:600; font-size:0.92rem;">
         <i class="bi bi-buildings text-warning me-2"></i>
-        SME Quality Rankings &mdash; NSE Emerge + BSE SME IPO
+        SME High-Growth Rankings &mdash; NSE Emerge + BSE SME IPO
       </div>
       <span class="badge bg-warning text-dark" id="sme-result-count" style="font-size:0.75rem;">0 stocks</span>
     </div>
     <div id="sme-loading-msg" class="scanning-msg" style="display:none;">
       <div class="spinner-border text-warning mb-3" role="status" style="width:2.5rem;height:2.5rem;"></div>
       <div class="scan-status-txt" style="font-size:0.95rem;">Fetching SME fundamental data&hellip;</div>
-      <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">Loading from Screener.in cache &mdash; may take 60–120 s on first run.</div>
+      <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">
+        Loading from Screener.in cache &mdash; may take 60–120 s on first run.<br>
+        <span style="color:var(--yellow);">High-growth gates: ROCE ≥ 15% · ROE ≥ 15% · Revenue Growth ≥ 20% · Profit Growth ≥ 20% · CFO &gt; 0</span>
+      </div>
     </div>
     <!-- Background download progress bar (shown while bg_running=true) -->
     <div id="sme-progress-wrap" style="display:none; padding:6px 14px 8px; border-bottom:1px solid var(--border);">
@@ -1727,7 +1731,7 @@ function renderMomentum(stocks, meta) {
     // Price
     var price    = s.price;
     var priceStr = price != null
-      ? '<span class="price-val">&#8377;' + Number(price).toLocaleString('en-IN') + '</span>'
+      ? '<span style="font-family:monospace;font-weight:700;">&#8377;' + Number(price).toLocaleString('en-IN', {maximumFractionDigits:1}) + '</span>'
       : '--';
 
     // Stop Loss
@@ -1914,15 +1918,13 @@ function renderMomentum(stocks, meta) {
         candleDateCell +
       '</td>' +
       '<td>' + priceStr + '</td>' +
-      '<td>' + slCell   + '</td>' +
-      '<td>' + rsiCell + '</td>' +
-      '<td>' + adxCell + '</td>' +
-      '<td>' + r20Cell + '</td>' +
-      '<td>' + rsCell  + '</td>' +
-      '<td>' + volCell + '</td>' +
-      '<td>' + emaCell + '</td>' +
-      '<td>' + macdCell + '</td>' +
-      '<td>' + secCell + '</td>' +
+      '<td>' + rsiCell  + '</td>' +
+      '<td>' + adxCell  + '</td>' +
+      '<td>' + r20Cell  + '</td>' +
+      '<td>' + rsCell   + '</td>' +
+      '<td>' + volCell  + '</td>' +
+      '<td>' + emaCell  + '</td>' +
+      '<td>' + secCell  + '</td>' +
       '<td>' + msCell   + '</td>' +
       '</tr>';
   }).join('');
@@ -2135,7 +2137,7 @@ function renderMorningMom(stocks, meta) {
     var ssLbl = ss >= 65 ? ' ★★★' : ss >= 45 ? ' ★★' : ss >= 25 ? ' ★' : '';
     var msCell =
       '<span style="font-family:monospace;font-weight:700;font-size:1rem;color:' + ssCol + ';">' + ss.toFixed(1) + ssLbl + '</span>' +
-      '<div class="fund-bar-wrap"><div class="fund-bar-fill" style="width:' + ssPct + '%;background:' + ssCol + ';"></div></div>';
+      '<div class="fund-bar-wrap"><div class="fund-bar-fill" style="width:' + ssPct + '%;"></div></div>';
 
     var ticker = s.display_ticker || (s.ticker || '').replace('.NS','');
 
@@ -2273,9 +2275,9 @@ function renderSME(stocks) {
   if (!stocks || !stocks.length) {
     tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' +
       '<i class="bi bi-buildings fs-2 d-block mb-2"></i>' +
-      '<strong>Downloading SME fundamental data…</strong><br>' +
-      '<small style="color:var(--text-muted);">Progress bar above shows download status.<br>' +
-      'Table will populate automatically as data arrives — no action needed.</small></div></td></tr>';
+      '<strong>No SME stocks passed high-growth gates yet</strong><br>' +
+      '<small style="color:var(--text-muted);">Gates: ROCE ≥ 15% · ROE ≥ 15% · Revenue Growth ≥ 20% · Profit Growth ≥ 20% · CFO > 0 · D/E ≤ 1.5<br>' +
+      'Progress bar above shows download status — table populates automatically.</small></div></td></tr>';
     return;
   }
   var medals = ['🥇','🥈','🥉'];
@@ -2292,10 +2294,7 @@ function renderSME(stocks) {
     // Price
     var cp    = s.current_price || s.price;
     var cpStr = cp != null
-      ? '<span style="font-family:monospace;font-weight:700;">&#8377;' + Number(cp).toLocaleString('en-IN', {maximumFractionDigits:1}) + '</span>' +
-        (s.week52_high != null && s.week52_low != null
-          ? '<div class="sector-sub" style="font-size:0.63rem;color:var(--text-muted);">52W: &#8377;' + fmtNum(s.week52_low) + '&ndash;&#8377;' + fmtNum(s.week52_high) + '</div>'
-          : '')
+      ? '<span style="font-family:monospace;font-weight:700;">&#8377;' + Number(cp).toLocaleString('en-IN', {maximumFractionDigits:1}) + '</span>'
       : '<span style="color:var(--text-muted);">--</span>';
 
     // Market cap
@@ -2314,20 +2313,15 @@ function renderSME(stocks) {
         (s.current_ratio != null ? '<div class="sector-sub">CR:' + Number(s.current_ratio).toFixed(1) + 'x</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
-    // ROCE
+    // ROCE — gate is ≥15%; green for ≥30%, yellow for ≥15%
     var roce    = s.roce;
-    var roceCls = roce == null ? '' : roce >= 30 ? 'vs-sector-pos' : roce >= 15 ? '' : 'vs-sector-neg';
+    var roceCls = roce == null ? '' : roce >= 30 ? 'vs-sector-pos' : roce >= 15 ? 'de-ok' : 'vs-sector-neg';
     var roceStr = roce != null
       ? '<span class="' + roceCls + '">' + Number(roce).toFixed(1) + '%</span>' +
-        (s.roe != null ? '<div class="sector-sub">ROE:' + Number(s.roe).toFixed(1) + '%</div>' : '') +
-        (s.opm != null ? '<div class="sector-sub">OPM:' + Number(s.opm).toFixed(1) + '%</div>' : '') +
-        (s.net_profit_margin != null ? '<div class="sector-sub">NPM:' + Number(s.net_profit_margin).toFixed(1) + '%</div>' : '') +
+        (s.roe_5y  != null ? '<div class="sector-sub">ROE5Y:' + Number(s.roe_5y).toFixed(1) + '%</div>' :
+         s.roe     != null ? '<div class="sector-sub">ROE:'   + Number(s.roe).toFixed(1)    + '%</div>' : '') +
         (s.roe_10y != null ? '<div class="sector-sub">ROE10Y:' + Number(s.roe_10y).toFixed(0) + '%</div>' : '')
-      : (s.opm != null
-          ? '<span style="color:var(--text-muted);">N/A</span>' +
-            '<div class="sector-sub">OPM:' + Number(s.opm).toFixed(1) + '%</div>' +
-            (s.net_profit_margin != null ? '<div class="sector-sub">NPM:' + Number(s.net_profit_margin).toFixed(1) + '%</div>' : '')
-          : '<span style="color:var(--text-muted);">N/A</span>');
+      : '<span style="color:var(--text-muted);">N/A</span>';
 
     // Promoter
     var ph    = s.promoter_holding;
@@ -2368,20 +2362,22 @@ function renderSME(stocks) {
         (s.cash_from_operations != null ? '<div class="sector-sub">CFO:&#8377;' + fmtNum(s.cash_from_operations) + 'Cr</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
-    // Sales growth 3Y + 10Y sub-line
+    // Sales growth — gate ≥20%; green ≥30%, yellow ≥20%
     var sg   = s.sales_growth_pct;
-    var sgCls = sg == null ? '' : sg >= 15 ? 'vs-sector-pos' : sg >= 0 ? '' : 'vs-sector-neg';
+    var sgCls = sg == null ? '' : sg >= 30 ? 'vs-sector-pos' : sg >= 20 ? 'de-ok' : sg >= 0 ? '' : 'vs-sector-neg';
     var sgStr = sg != null
       ? '<span class="' + sgCls + '">' + (sg >= 0 ? '+' : '') + Number(sg).toFixed(0) + '%</span>' +
-        (s.sales_growth_10y != null ? '<div class="sector-sub">10Y:' + (s.sales_growth_10y >= 0 ? '+' : '') + Number(s.sales_growth_10y).toFixed(0) + '%</div>' : '')
+        (s.sales_growth_ttm != null ? '<div class="sector-sub">TTM:' + (s.sales_growth_ttm >= 0 ? '+' : '') + Number(s.sales_growth_ttm).toFixed(0) + '%</div>' : '') +
+        (s.sales_growth_5y  != null ? '<div class="sector-sub">5Y:'  + (s.sales_growth_5y  >= 0 ? '+' : '') + Number(s.sales_growth_5y ).toFixed(0) + '%</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
-    // Profit growth 3Y + 10Y sub-line
+    // Profit growth — gate ≥20%; green ≥30%, yellow ≥20%
     var pg   = s.profit_growth_3y;
-    var pgCls = pg == null ? '' : pg >= 15 ? 'vs-sector-pos' : pg >= 0 ? '' : 'vs-sector-neg';
+    var pgCls = pg == null ? '' : pg >= 30 ? 'vs-sector-pos' : pg >= 20 ? 'de-ok' : pg >= 0 ? '' : 'vs-sector-neg';
     var pgStr = pg != null
       ? '<span class="' + pgCls + '">' + (pg >= 0 ? '+' : '') + Number(pg).toFixed(0) + '%</span>' +
-        (s.profit_growth_10y != null ? '<div class="sector-sub">10Y:' + (s.profit_growth_10y >= 0 ? '+' : '') + Number(s.profit_growth_10y).toFixed(0) + '%</div>' : '')
+        (s.profit_growth_ttm != null ? '<div class="sector-sub">TTM:' + (s.profit_growth_ttm >= 0 ? '+' : '') + Number(s.profit_growth_ttm).toFixed(0) + '%</div>' : '') +
+        (s.profit_growth_5y  != null ? '<div class="sector-sub">5Y:'  + (s.profit_growth_5y  >= 0 ? '+' : '') + Number(s.profit_growth_5y ).toFixed(0) + '%</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
     // Fund score bar + grade
@@ -2593,7 +2589,7 @@ function sectorsLoad(forceRefresh) {
       if (j.status === 'error') {
         document.getElementById('sec-top5-grid').innerHTML =
           '<div class="empty-state" style="grid-column:1/-1;">' +
-          '<i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
+          '<i class="bi bi-exclamation-circle fs-2 d-block mb-2"></i>' +
           '<strong>Failed to load sector index data.</strong><br>' +
           '<small style="color:var(--text-muted);">' + (j.error || 'Unknown error') + '<br>' +
           'Yahoo Finance may be temporarily unavailable. Try <strong>Refresh</strong> in a moment.</small>' +
@@ -2921,18 +2917,20 @@ function renderFundamentals(stocks) {
 
     // Sales growth 3Y + 10Y sub-line
     var sg   = s.sales_growth_pct;
-    var sgCls = sg == null ? '' : sg >= 15 ? 'vs-sector-pos' : sg >= 0 ? '' : 'vs-sector-neg';
+    var sgCls = sg == null ? '' : sg >= 30 ? 'vs-sector-pos' : sg >= 20 ? 'de-ok' : sg >= 0 ? '' : 'vs-sector-neg';
     var sgStr = sg != null
       ? '<span class="' + sgCls + '">' + (sg >= 0 ? '+' : '') + Number(sg).toFixed(0) + '%</span>' +
-        (s.sales_growth_10y != null ? '<div class="sector-sub">10Y:' + (s.sales_growth_10y >= 0 ? '+' : '') + Number(s.sales_growth_10y).toFixed(0) + '%</div>' : '')
+        (s.sales_growth_ttm != null ? '<div class="sector-sub">TTM:' + (s.sales_growth_ttm >= 0 ? '+' : '') + Number(s.sales_growth_ttm).toFixed(0) + '%</div>' : '') +
+        (s.sales_growth_5y  != null ? '<div class="sector-sub">5Y:'  + (s.sales_growth_5y  >= 0 ? '+' : '') + Number(s.sales_growth_5y ).toFixed(0) + '%</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
     // Profit growth 3Y + 10Y sub-line
     var pg   = s.profit_growth_3y;
-    var pgCls = pg == null ? '' : pg >= 15 ? 'vs-sector-pos' : pg >= 0 ? '' : 'vs-sector-neg';
+    var pgCls = pg == null ? '' : pg >= 30 ? 'vs-sector-pos' : pg >= 20 ? 'de-ok' : pg >= 0 ? '' : 'vs-sector-neg';
     var pgStr = pg != null
       ? '<span class="' + pgCls + '">' + (pg >= 0 ? '+' : '') + Number(pg).toFixed(0) + '%</span>' +
-        (s.profit_growth_10y != null ? '<div class="sector-sub">10Y:' + (s.profit_growth_10y >= 0 ? '+' : '') + Number(s.profit_growth_10y).toFixed(0) + '%</div>' : '')
+        (s.profit_growth_ttm != null ? '<div class="sector-sub">TTM:' + (s.profit_growth_ttm >= 0 ? '+' : '') + Number(s.profit_growth_ttm).toFixed(0) + '%</div>' : '') +
+        (s.profit_growth_5y  != null ? '<div class="sector-sub">5Y:'  + (s.profit_growth_5y  >= 0 ? '+' : '') + Number(s.profit_growth_5y ).toFixed(0) + '%</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
     // Fund score bar + grade

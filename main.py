@@ -1654,10 +1654,19 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
 # Tracks NSE Emerge + BSE SME stocks, same quality scoring as main fund tab,
 # with an extra "exchange" field ("NSE Emerge" | "BSE SME") per record.
 
-_SME_FUND_CACHE_FILE = _PL("cache/sme_fundamentals_data.json")
-_sme_fund_data: dict  = {}           # {ticker: {exchange, fund_score, ...}}
-_sme_bg_running: bool = False
-_sme_universe: dict   = {}           # {ticker: "NSE Emerge" | "BSE SME"}  -  built at startup
+_SME_FUND_CACHE_FILE   = _PL("cache/sme_fundamentals_data.json")
+_sme_fund_data: dict   = {}           # {ticker: {exchange, fund_score, ...}}
+_sme_bg_running: bool  = False
+_sme_universe: dict    = {}           # {ticker: "NSE Emerge" | "BSE SME"}  -  built at startup
+
+# SME high-growth gate thresholds (stricter on growth, relaxed on debt vs Nifty500)
+_SME_ROCE_MIN         = 15.0   # %
+_SME_ROE_MIN          = 15.0   # %
+_SME_DE_MAX           = 1.5    # ratio  (SME firms may carry more growth capex debt)
+_SME_PROFIT_GROW_MIN  = 20.0   # % 3Y CAGR
+_SME_SALES_GROW_MIN   = 20.0   # % 3Y CAGR
+_SME_CFO_POSITIVE     = True
+_SME_MIN_KEY_FIELDS   = 2      # minimum key fields required before applying gates
 
 
 def _sme_cache_load() -> None:
@@ -1688,6 +1697,217 @@ def _sme_cache_save() -> None:
         )
     except Exception as exc:
         logger.warning("SME fund cache save failed: %s", exc)
+
+
+def _passes_sme_gates(rec: dict) -> bool:
+    """Hard fundamental gates for SME/Emerge stocks — tuned for HIGH-GROWTH companies.
+
+    Stricter on growth (20% min vs 8% for Nifty500) to filter out stagnant micro-caps.
+    Slightly more lenient on debt (D/E ≤ 1.5 vs 1.0) as growing SMEs may carry capex debt.
+
+    Active gates:
+      ROCE ≥ 15%           Capital efficiency
+      ROE  ≥ 15%           Return on equity
+      D/E  ≤ 1.5           Moderate leverage
+      Profit Growth ≥ 20%  Genuine high-growth earners
+      Sales Growth  ≥ 20%  Fast-growing revenue
+      CFO > 0              Positive operating cash flow
+
+    NULL values = data not yet downloaded → gate not applied for that field.
+    """
+    key_vals = [
+        rec.get("roce"),
+        rec.get("roe") or rec.get("roe_5y") or rec.get("roe_10y"),
+        rec.get("profit_growth_3y") or rec.get("profit_growth_5y"),
+        rec.get("sales_growth_pct") or rec.get("sales_growth_5y"),
+    ]
+    if sum(1 for v in key_vals if v is not None) < _SME_MIN_KEY_FIELDS:
+        return False
+
+    roce = rec.get("roce")
+    if roce is not None and float(roce) < _SME_ROCE_MIN:
+        return False
+
+    roe = rec.get("roe_10y") or rec.get("roe_5y") or rec.get("roe")
+    if roe is not None and float(roe) < _SME_ROE_MIN:
+        return False
+
+    de = rec.get("debt_equity")
+    if de is not None and float(de) > _SME_DE_MAX:
+        return False
+
+    pg = rec.get("profit_growth_3y") or rec.get("profit_growth_5y")
+    if pg is not None and float(pg) < _SME_PROFIT_GROW_MIN:
+        return False
+
+    sg = rec.get("sales_growth_pct") or rec.get("sales_growth_5y")
+    if sg is not None and float(sg) < _SME_SALES_GROW_MIN:
+        return False
+
+    if _SME_CFO_POSITIVE:
+        cfo = rec.get("cash_from_operations")
+        if cfo is not None and float(cfo) <= 0:
+            return False
+
+    return True
+
+
+def _sme_quality_score(rec: dict) -> float:
+    """Growth-dominated quality score for SME/Emerge stocks.
+
+    SME stocks are early-stage high-growth companies; growth metrics carry 40% of weight.
+    Quality/profitability carries 25%, cash flow 15%, debt 10%, value 6%, size 4%.
+
+    +- Growth (40 pts) --------------------------------------------------------+
+    |  Profit Growth 3Y   20 pts  Primary ranking factor for SME               |
+    |  Revenue Growth 3Y  15 pts  Business expansion pace                      |
+    |  CFO confirmation    5 pts  Growth backed by real operating cash          |
+    +- Quality (25 pts) -------------------------------------------------------+
+    |  ROCE               12 pts  Capital efficiency above SME gate             |
+    |  ROE                 8 pts  Return on equity (current preferred)          |
+    |  Promoter holding    5 pts  Management conviction                         |
+    +- Cash Flow (15 pts) -----------------------------------------------------+
+    |  CFO Yield          15 pts  Operating cash / MCap (real earnings quality) |
+    +- Debt (10 pts) ----------------------------------------------------------+
+    |  Debt / Equity      6 pts   Lower debt = more room to grow                |
+    |  Current Ratio      4 pts   Short-term solvency                           |
+    +- Value (6 pts) ----------------------------------------------------------+
+    |  PEG ratio          4 pts   Growth at reasonable price                    |
+    |  Earnings Yield     2 pts   Inverse of PE                                 |
+    +- Size (4 pts) -----------------------------------------------------------+
+    |  Market Cap         4 pts   Stability / graduation path proxy             |
+    +--------------------------------------------------------------------------+
+    Max base = 100 pts   Bonus: dividend (+1) + 10Y profit growth (+1) + TTM growth (+2)
+    """
+    score = 0.0
+
+    # -- Growth block (40 pts) ------------------------------------------------
+
+    # Profit Growth 3Y  -  20 pts  (gate ensures ≥ 20%; 30% = 10 pts, 60% = 20 pts)
+    pg = rec.get("profit_growth_3y") or rec.get("profit_growth_5y")
+    if pg is not None:
+        score += min(20.0, max(0.0, float(pg) * 0.333))   # 60% = 20 pts
+
+    # Revenue Growth 3Y  -  15 pts  (gate ensures ≥ 20%; 40% = 10 pts, 60% = 15 pts)
+    sg = rec.get("sales_growth_pct") or rec.get("sales_growth_5y")
+    if sg is not None:
+        score += min(15.0, max(0.0, float(sg) * 0.25))    # 60% = 15 pts
+
+    # CFO confirmation of growth  -  5 pts
+    cfo_y = rec.get("cfo_yield")
+    if cfo_y is not None:
+        cfo_y = float(cfo_y)
+        if cfo_y >= 8.0:    score += 5.0
+        elif cfo_y >= 5.0:  score += 4.0
+        elif cfo_y >= 3.0:  score += 3.0
+        elif cfo_y >= 1.0:  score += 2.0
+        elif cfo_y >= 0.0:  score += 1.0
+
+    # -- Quality block (25 pts) -----------------------------------------------
+
+    # ROCE  -  12 pts  (gate ≥ 15%; 25% = 10 pts, 40% = 12 pts full)
+    roce = rec.get("roce")
+    if roce is not None:
+        score += min(12.0, max(0.0, float(roce) * 0.30))
+
+    # ROE (current preferred for SME)  -  8 pts
+    roe_ref = rec.get("roe") or rec.get("roe_5y") or rec.get("roe_10y")
+    if roe_ref is not None:
+        score += min(8.0, max(0.0, float(roe_ref) * 0.32))
+
+    # Promoter holding  -  5 pts  (high promoter = high founder conviction)
+    ph = rec.get("promoter_holding")
+    if ph is not None:
+        ph = float(ph)
+        if ph >= 70:    score += 5.0
+        elif ph >= 60:  score += 4.0
+        elif ph >= 50:  score += 3.0
+        elif ph >= 40:  score += 2.0
+        elif ph >= 30:  score += 1.0
+
+    # -- Cash Flow block (15 pts) ---------------------------------------------
+
+    # CFO Yield  -  15 pts  (SME must show real earnings quality)
+    cfo_y2 = rec.get("cfo_yield")
+    if cfo_y2 is not None:
+        cfo_y2 = float(cfo_y2)
+        if cfo_y2 >= 12.0:   score += 15.0
+        elif cfo_y2 >= 8.0:  score += 12.0
+        elif cfo_y2 >= 5.0:  score += 9.0
+        elif cfo_y2 >= 3.0:  score += 6.0
+        elif cfo_y2 >= 1.0:  score += 3.0
+        elif cfo_y2 >= 0.0:  score += 1.0
+
+    # -- Debt block (10 pts) --------------------------------------------------
+
+    # D/E ratio  -  6 pts  (gate ≤ 1.5; rewards low debt)
+    de = rec.get("debt_equity")
+    if de is not None:
+        de = float(de)
+        if de == 0.0:       score += 6.0
+        elif de <= 0.25:    score += 5.5
+        elif de <= 0.50:    score += 4.5
+        elif de <= 0.75:    score += 3.5
+        elif de <= 1.00:    score += 2.5
+        elif de <= 1.50:    score += 1.0
+
+    # Current Ratio  -  4 pts
+    cr = rec.get("current_ratio")
+    if cr is not None:
+        cr = float(cr)
+        if cr >= 2.5:    score += 4.0
+        elif cr >= 2.0:  score += 3.0
+        elif cr >= 1.5:  score += 2.0
+        elif cr >= 1.0:  score += 1.0
+
+    # -- Value block (6 pts) --------------------------------------------------
+
+    # PEG ratio  -  4 pts
+    peg = rec.get("peg_ratio")
+    if peg is not None:
+        peg = float(peg)
+        if peg <= 0.5:    score += 4.0
+        elif peg <= 1.0:  score += 3.0
+        elif peg <= 1.5:  score += 2.0
+        elif peg <= 2.0:  score += 1.0
+
+    # Earnings yield  -  2 pts
+    ey = rec.get("earnings_yield")
+    if ey is not None:
+        score += min(2.0, max(0.0, float(ey) * 0.20))
+
+    # -- Size block (4 pts) ---------------------------------------------------
+
+    # Market cap (smaller SME MCap is expected; graduated scoring)
+    mc = float(rec.get("market_cap_cr") or 0)
+    if mc >= 5_000:     score += 4.0
+    elif mc >= 2_000:   score += 3.0
+    elif mc >= 1_000:   score += 2.0
+    elif mc >= 500:     score += 1.5
+    elif mc >= 200:     score += 1.0
+    else:               score += 0.5
+
+    # -- Bonus points ---------------------------------------------------------
+
+    # Dividend yield bonus (+1 pt max — SME rarely pays dividends)
+    dy = rec.get("dividend_yield")
+    if dy is not None and float(dy) > 0:
+        score += min(1.0, float(dy) * 0.5)
+
+    # 10Y profit CAGR bonus (+1 pt) — long track record for an SME is valuable
+    pg10 = rec.get("profit_growth_10y")
+    if pg10 is not None and float(pg10) > 0:
+        score += min(1.0, float(pg10) * 0.04)
+
+    # TTM growth bonus (+2 pts) — recent acceleration
+    ttm_pg = rec.get("profit_growth_ttm")
+    ttm_sg = rec.get("sales_growth_ttm")
+    if ttm_pg is not None and float(ttm_pg) >= 25:
+        score += 1.0
+    if ttm_sg is not None and float(ttm_sg) >= 25:
+        score += 1.0
+
+    return round(min(100.0, max(0.0, score)), 2)
 
 
 def _sme_fund_refresh_ticker(ticker: str) -> tuple:
@@ -1777,8 +1997,8 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
     if fii is not None and dii is not None:
         result["inst_holding"] = round(fii + dii, 2)
 
-    # Content-change detection (exclude _ts)
-    existing = _fund_data.get(ticker, {})
+    # Content-change detection against SME-specific cache (exclude _ts)
+    existing = _sme_fund_data.get(ticker, {})
     content_changed = False
     for k, v in result.items():
         if existing.get(k) != v:
@@ -1793,7 +2013,7 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
                 break
 
     result["_ts"] = time.time()
-    _fund_data[ticker] = result
+    _sme_fund_data[ticker] = result   # write to SME-specific cache dict
     return result, content_changed
 
 
@@ -1802,12 +2022,13 @@ def _sme_bg_worker(tickers: list, batch: int = 60) -> None:
 
     Uses SME-aware fetching (_sme_fund_refresh_ticker) which additionally
     tries the '-SME' URL variant on screener.in for NSE Emerge stocks.
+    Data is stored in the SEPARATE _sme_fund_data cache (not _fund_data).
     Saves to disk only when field values actually changed.
     One final save is always written at the end to persist updated _ts values.
     """
     global _sme_bg_running
     stale = [t for t in tickers if
-             time.time() - _fund_data.get(t, {}).get("_ts", 0) > _FUND_CACHE_TTL]
+             time.time() - _sme_fund_data.get(t, {}).get("_ts", 0) > _FUND_CACHE_TTL]
 
     if not stale:
         logger.info("SME BG worker: all %d tickers fresh  -  nothing to download", len(tickers))
@@ -1823,7 +2044,7 @@ def _sme_bg_worker(tickers: list, batch: int = 60) -> None:
         if _sme_cancel.is_set():
             logger.info("SME BG worker: cancelled after %d/%d tickers (tab switched)",
                         total_refreshed, len(stale))
-            _fund_cache_save()
+            _sme_cache_save()
             _sme_bg_running = False
             return
 
@@ -1840,6 +2061,7 @@ def _sme_bg_worker(tickers: list, batch: int = 60) -> None:
                     fetched_in_chunk += 1
                 if changed:
                     changed_in_chunk += 1
+                time.sleep(0.20)   # rate-limit: 5 req/s to avoid Screener.in blocking
             except Exception as exc:
                 logger.debug("SME BG refresh error %s: %s", ticker, exc)
 
@@ -1847,7 +2069,7 @@ def _sme_bg_worker(tickers: list, batch: int = 60) -> None:
         total_changed   += changed_in_chunk
 
         if changed_in_chunk:
-            _fund_cache_save()   # SME data lives in shared _fund_data cache
+            _sme_cache_save()   # save to SME-specific cache file
             logger.info("SME BG: batch %d/%d  -  %d fetched, %d changed -> saved",
                         min(i + batch, len(stale)), len(stale),
                         fetched_in_chunk, changed_in_chunk)
@@ -1856,7 +2078,7 @@ def _sme_bg_worker(tickers: list, batch: int = 60) -> None:
                         min(i + batch, len(stale)), len(stale), fetched_in_chunk)
 
     # Final save to persist refreshed _ts values
-    _fund_cache_save()
+    _sme_cache_save()
     logger.info("SME BG worker done: %d fetched, %d content-changed, final save written",
                 total_refreshed, total_changed)
     _sme_bg_running = False
@@ -2142,8 +2364,10 @@ async def get_morning_momentum(
 @app.get("/api/sme/fundamentals")
 async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
     """
-    Top SME stocks ranked by fundamental quality.
+    Top SME stocks ranked by high-growth fundamental quality.
     Universe: NSE Emerge + BSE SME IPO tickers.
+    Uses a SEPARATE cache file (cache/sme_fundamentals_data.json).
+    Gates: ROCE≥15%, ROE≥15%, D/E≤1.5, ProfitGrowth3Y≥20%, SalesGrowth≥20%, CFO>0.
     Each result includes an 'exchange' field: 'NSE Emerge' or 'BSE SME'.
     """
     global _sme_bg_running, _sme_universe
@@ -2156,20 +2380,17 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
     all_tickers = list(_sme_universe.keys())
     now = time.time()
 
+    # If ?refresh=1 — reset _ts so BG worker will re-fetch from Screener.in
     if refresh:
         for t in all_tickers:
             if t in _sme_fund_data:
                 _sme_fund_data[t]["_ts"] = 0.0
-        # Also refresh data stored in main _fund_data (shared fetcher)
-        for t in all_tickers:
-            if t in _fund_data:
-                _fund_data[t]["_ts"] = 0.0
 
     combined = []
     for ticker in all_tickers:
         key       = ticker.upper()
-        # Pull from shared _fund_data cache (same fetcher as main fund tab)
-        cache_rec = _fund_data.get(key) or _fund_data.get(ticker) or {}
+        # Read from SME-specific cache
+        cache_rec = _sme_fund_data.get(key) or _sme_fund_data.get(ticker) or {}
 
         if not cache_rec:
             continue
@@ -2185,6 +2406,7 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
                   "promoter_holding", "fii_holding", "dii_holding", "inst_holding",
                   "sales_growth_pct", "sales_growth_5y", "sales_growth_10y",
                   "profit_growth_3y", "profit_growth_5y", "profit_growth_10y",
+                  "sales_growth_ttm", "profit_growth_ttm",
                   "pe_ratio", "peg_ratio", "earnings_yield",
                   "book_value", "pb_ratio", "dividend_yield",
                   "graham_number", "graham_mos", "sales_growth_avg",
@@ -2196,7 +2418,11 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
         if "current_price" not in rec and rec.get("price"):
             rec["current_price"] = rec["price"]
 
-        rec["fund_score"] = _fund_quality_score(rec)
+        # Apply SME high-growth gates before scoring
+        if not _passes_sme_gates(rec):
+            continue
+
+        rec["fund_score"] = _sme_quality_score(rec)
         combined.append(rec)
 
     combined.sort(key=lambda x: x["fund_score"], reverse=True)
@@ -2204,9 +2430,9 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
     for i, s in enumerate(top30, 1):
         s["sme_rank"] = i
 
-    # Kick background refresh for stale SME tickers (shared _fund_data cache)
+    # Kick background refresh for stale SME tickers (SME-specific cache)
     stale = [t for t in all_tickers
-             if now - _fund_data.get(t, {}).get("_ts", 0) > _FUND_CACHE_TTL]
+             if now - _sme_fund_data.get(t, {}).get("_ts", 0) > _FUND_CACHE_TTL]
     if stale and not _sme_bg_running:
         _sme_bg_running = True
         _sme_cancel.clear()   # allow this worker to run (user is on sme tab)
@@ -2235,6 +2461,13 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
         "stale_count":  len(stale),
         "nse_count":    nse_count,
         "bse_count":    bse_count,
+        "gates": {
+            "roce_min":        _SME_ROCE_MIN,
+            "roe_min":         _SME_ROE_MIN,
+            "de_max":          _SME_DE_MAX,
+            "profit_grow_min": _SME_PROFIT_GROW_MIN,
+            "sales_grow_min":  _SME_SALES_GROW_MIN,
+        },
     })
 
 
