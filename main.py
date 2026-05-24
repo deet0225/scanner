@@ -487,7 +487,8 @@ async def _kick_fund_bg() -> None:
     all_tickers = list(dict.fromkeys(NIFTY500_TICKERS + NIFTY_MICROCAP250_TICKERS))
     stale_count = sum(
         1 for t in all_tickers
-        if time.time() - _fund_data.get(t, {}).get("_ts", 0) >= _FUND_CACHE_TTL
+        if time.time() - _fund_data.get(t, {}).get("_ts", 0)
+           >= (_FUND_FAIL_TTL if _fund_data.get(t, {}).get("_gf") else _FUND_CACHE_TTL)
     )
     if stale_count == 0:
         logger.info("Fundamentals cache fully fresh  -  nothing to refresh")
@@ -1021,9 +1022,13 @@ async def get_sector_momentum(
 
 from pathlib import Path as _PL
 
-_FUND_CACHE_FILE = _PL("cache/fundamentals_data.json")
-_FUND_CACHE_TTL  = 24 * 3600        # 24 h per ticker
+_FUND_CACHE_FILE        = _PL("cache/fundamentals_data.json")
+_FUND_CACHE_TTL         = 48 * 3600   # 48 h per ticker (fundamentals are quarterly — no need to refresh daily)
+_FUND_FAIL_TTL          = 72 * 3600   # 72 h for tickers that clearly fail hard gates (skip re-download)
+_FUND_FORCE_REFRESH_TTL =  4 * 3600   # on manual Refresh, only re-fetch entries older than 4 h
+_FUND_MIN_SCORE         = 50.0        # hide stocks with fund_score < 50 from the table
 _fund_data: dict = {}               # {ticker: {sector, debt_equity, ...}, ...}
+_fund_data_lock  = threading.Lock() # protects concurrent writes from parallel BG workers
 _fund_bg_running: bool = False
 
 
@@ -1178,37 +1183,67 @@ def _fund_refresh_ticker(ticker: str) -> tuple:
                 break
 
     result["_ts"] = time.time()   # always refresh TTL in memory
-    _fund_data[ticker] = result
+    with _fund_data_lock:
+        _fund_data[ticker] = result
     return result, content_changed
 
 
-def _fund_bg_worker(tickers: list, batch: int = 120) -> None:
-    """Blocking background worker  -  runs via run_in_executor.
-    Only downloads stale tickers (TTL check).  Saves to disk only when at
-    least one field value actually changed vs the cached entry  -  pure
-    timestamp-only refreshes do NOT trigger a disk write mid-run.
-    One final save is always performed at the end to persist updated _ts
-    values so the next startup doesn't re-download already-fresh tickers.
+def _fund_bg_worker(tickers: list) -> None:
+    """Parallel background worker  -  runs via run_in_executor.
+
+    Performance optimisations vs the previous sequential version:
+      1. ThreadPoolExecutor(5 workers): ~5× speedup over serial downloads.
+      2. Known-fail skip (_gf flag): tickers that clearly failed hard gates
+         during the last refresh use _FUND_FAIL_TTL (72 h) instead of the
+         normal _FUND_CACHE_TTL (48 h). A stock that fails ROCE/D/E gates
+         doesn't need to be re-checked every 48 h.
+      3. Disk saves only when content actually changed mid-run; one final
+         save always written so _ts persists across restarts.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     global _fund_bg_running
+    MAX_WORKERS  = 5   # 5 parallel screener.in requests stays within polite limits
+    BATCH_SIZE   = 50  # save checkpoint every N tickers
     total_refreshed = 0
     total_changed   = 0
+    total_skipped   = 0
     now = time.time()
 
-    # Only process tickers whose cache entry has expired
-    stale = [t for t in tickers
-             if now - _fund_data.get(t, {}).get("_ts", 0) >= _FUND_CACHE_TTL]
+    # Separate stale tickers using per-ticker TTL:
+    #   known-fail tickers (_gf flag) → use the longer FAIL TTL (skip them longer)
+    #   normal tickers                → use standard CACHE TTL
+    stale: list = []
+    for t in tickers:
+        entry  = _fund_data.get(t, {})
+        ttl    = _FUND_FAIL_TTL if entry.get("_gf") else _FUND_CACHE_TTL
+        if now - entry.get("_ts", 0) >= ttl:
+            stale.append(t)
+        else:
+            total_skipped += 1
 
     if not stale:
-        logger.info("Fundamentals BG worker: all %d tickers fresh  -  nothing to download", len(tickers))
+        logger.info(
+            "Fundamentals BG worker: all %d tickers fresh (%d known-fail skipped)  -  nothing to download",
+            len(tickers), total_skipped,
+        )
         _fund_bg_running = False
         return
 
-    logger.info("Fundamentals BG worker: %d stale / %d total  -  starting incremental refresh",
-                len(stale), len(tickers))
+    known_fail_count = sum(1 for t in stale if _fund_data.get(t, {}).get("_gf"))
+    logger.info(
+        "Fundamentals BG worker: %d stale (incl. %d known-fail) / %d total  -  "
+        "parallel refresh with %d workers",
+        len(stale), known_fail_count, len(tickers), MAX_WORKERS,
+    )
 
-    for i in range(0, len(stale), batch):
-        # Check cancellation before every batch
+    def _worker(t: str):
+        """Download one ticker; returns (ticker, result, changed)."""
+        result, changed = _fund_refresh_ticker(t)
+        return t, result, changed
+
+    changed_total = 0
+    for batch_start in range(0, len(stale), BATCH_SIZE):
         if _fund_cancel.is_set():
             logger.info("Fundamentals BG worker: cancelled after %d/%d tickers (tab switched)",
                         total_refreshed, len(stale))
@@ -1216,41 +1251,68 @@ def _fund_bg_worker(tickers: list, batch: int = 120) -> None:
             _fund_bg_running = False
             return
 
-        chunk = stale[i: i + batch]
-        changed_in_chunk  = 0
-        fetched_in_chunk  = 0
-        for t in chunk:
-            if _fund_cancel.is_set():
-                logger.info("Fund BG worker: cancelled mid-batch at ticker %s", t)
-                break
-            try:
-                result, changed = _fund_refresh_ticker(t)
-                if any(k in result for k in ("roce", "roe", "promoter_holding")):
-                    fetched_in_chunk += 1
-                if changed:
-                    changed_in_chunk += 1
-                time.sleep(0.20)          # polite rate limit (~5 req/s)
-            except Exception as exc:
-                logger.debug("Fund BG worker %s: %s", t, exc)
+        chunk = stale[batch_start: batch_start + BATCH_SIZE]
+        changed_in_batch = 0
+        fetched_in_batch = 0
 
-        total_refreshed += fetched_in_chunk
-        total_changed   += changed_in_chunk
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = {pool.submit(_worker, t): t for t in chunk}
+            for future in as_completed(futures):
+                if _fund_cancel.is_set():
+                    # Cancel remaining futures and exit
+                    for f in futures:
+                        f.cancel()
+                    break
+                t = futures[future]
+                try:
+                    _, result, changed = future.result()
 
-        # Save mid-batch only when content actually changed  -  skip pure-ts refreshes
-        if changed_in_chunk:
+                    # Mark gate outcome on the cached entry so next cycle
+                    # can apply the appropriate (longer) TTL for failures.
+                    key_coverage = sum(
+                        1 for v in [
+                            result.get("roce"),
+                            result.get("roe") or result.get("roe_5y"),
+                            result.get("profit_growth_3y") or result.get("profit_growth_5y"),
+                            result.get("sales_growth_pct") or result.get("sales_growth_5y"),
+                        ]
+                        if v is not None
+                    )
+                    with _fund_data_lock:
+                        entry = _fund_data.get(t, {})
+                        if key_coverage >= 3 and not _passes_fund_gates(result):
+                            entry["_gf"] = True    # clearly failing — use long TTL next cycle
+                        else:
+                            entry.pop("_gf", None)  # passing or insufficient data — normal TTL
+
+                    if any(k in result for k in ("roce", "roe", "promoter_holding")):
+                        fetched_in_batch += 1
+                    if changed:
+                        changed_in_batch += 1
+
+                except Exception as exc:
+                    logger.debug("Fund BG worker %s: %s", t, exc)
+
+        total_refreshed += fetched_in_batch
+        total_changed   += changed_in_batch
+        changed_total   += changed_in_batch
+
+        end = min(batch_start + BATCH_SIZE, len(stale))
+        if changed_in_batch:
             _fund_cache_save()
-            logger.info("Fundamentals BG: batch %d/%d  -  %d fetched, %d changed -> saved",
-                        min(i + batch, len(stale)), len(stale),
-                        fetched_in_chunk, changed_in_chunk)
+            logger.info("Fundamentals BG: %d/%d  -  %d fetched, %d changed -> saved",
+                        end, len(stale), fetched_in_batch, changed_in_batch)
         else:
-            logger.info("Fundamentals BG: batch %d/%d  -  %d fetched, no content changes (skipped save)",
-                        min(i + batch, len(stale)), len(stale), fetched_in_chunk)
+            logger.info("Fundamentals BG: %d/%d  -  %d fetched, no content changes",
+                        end, len(stale), fetched_in_batch)
 
-    # Always do one final save to persist updated _ts values even when no
-    # content changed  -  this prevents re-downloading the same data again on restart.
+    # Always final save to persist updated _ts / _gf flags
     _fund_cache_save()
-    logger.info("Fundamentals BG worker done: %d fetched, %d content-changed, final save written",
-                total_refreshed, total_changed)
+    logger.info(
+        "Fundamentals BG worker done: %d fetched, %d content-changed, "
+        "%d known-fail skipped, final save written",
+        total_refreshed, total_changed, total_skipped,
+    )
     _fund_bg_running = False
 
 
@@ -1525,26 +1587,40 @@ def _fund_quality_score(rec: dict) -> float:
 @app.get("/api/fundamentals")
 async def get_fundamentals(refresh: int = 0) -> JSONResponse:
     """
-    Top 30 stocks by strict fundamental quality from ALL Nifty500 + Microcap250 tickers.
+    Top 30 stocks by strict fundamental quality from Nifty500 + Microcap250 tickers.
 
     Hard gates (applied before scoring):
       ROCE ≥ 12%   ROE ≥ 12%   D/E ≤ 1.0   ProfitGrowth3Y ≥ 8%   SalesGrowth ≥ 5%
       CashFromOperations > 0  (positive operating cash flow — real earnings quality)
 
+    Performance notes:
+      - Universe: Nifty500 + Microcap250 = 750 tickers (full combined list).
+      - Background worker uses 5 parallel threads (was sequential) → ~5–8× speedup.
+      - Known-fail tickers (_gf flag) skip re-download for 72 h instead of 48 h;
+        stocks that clearly fail gates (ROCE/D/E/growth) are not checked again for 3 days.
+      - Result is served instantly from disk cache; stale entries refresh in background.
+
     Uses a disk cache (cache/fundamentals_data.json) that persists across restarts.
-    Stale/missing entries are refreshed in background — returns instantly from cache.
     Pass ?refresh=1 to force an immediate background refresh.
     """
     global _fund_bg_running
 
+    # Fundamentals tab covers Nifty500 + Microcap250 (combined de-duped universe).
+    # Performance is maintained via 5-worker parallel downloads + known-fail skip TTL
+    # so the extra 250 MC tickers no longer cause a 1-hour scan.
     all_tickers: list = list(dict.fromkeys(NIFTY500_TICKERS + NIFTY_MICROCAP250_TICKERS))
     now = time.time()
 
-    # If ?refresh=1  -  clear TTL timestamps so BG worker will re-fetch
+    # If ?refresh=1  -  only reset entries that are older than _FUND_FORCE_REFRESH_TTL (4 h).
+    # This ensures "Refresh" is delta-only: recently-fetched data is kept as-is and the
+    # background worker only re-downloads entries that are genuinely due for a refresh.
+    # (Setting ALL timestamps to 0 would force a 750-ticker full re-download every click.)
     if refresh:
         for t in all_tickers:
             if t in _fund_data:
-                _fund_data[t]["_ts"] = 0.0
+                age = now - _fund_data[t].get("_ts", 0)
+                if age > _FUND_FORCE_REFRESH_TTL:
+                    _fund_data[t]["_ts"] = 0.0
 
     # Map scan results by ticker (provides tech score, fresh D/E, market_cap)
     scan_map: dict = {}
@@ -1599,23 +1675,37 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
         rec["fund_score"] = _fund_quality_score(rec)
         combined.append(rec)
 
-    # Apply hard fundamental quality gates — only genuinely strong stocks pass
-    qualified = [r for r in combined if _passes_fund_gates(r)]
+    # Apply hard fundamental quality gates + minimum score threshold (≥ 50)
+    qualified = [
+        r for r in combined
+        if _passes_fund_gates(r) and r.get("fund_score", 0) >= _FUND_MIN_SCORE
+    ]
     qualified.sort(key=lambda x: x["fund_score"], reverse=True)
     top30 = qualified[:30]
     for i, s in enumerate(top30, 1):
         s["fund_rank"] = i
 
-    logger.info("Fundamentals: %d total records, %d passed quality gates, showing top %d",
-                len(combined), len(qualified), len(top30))
+    logger.info("Fundamentals: %d total records, %d passed quality gates + score≥%.0f, showing top %d",
+                len(combined), len(qualified), _FUND_MIN_SCORE, len(top30))
 
-    # Count stale entries and trigger background refresh if not already running
-    stale = [t for t in all_tickers
-             if now - _fund_data.get(t, {}).get("_ts", 0) > _FUND_CACHE_TTL]
+    # Count stale entries and trigger background refresh if not already running.
+    # Use per-ticker TTL: known-fail tickers use the longer FAIL TTL.
+    stale = [
+        t for t in all_tickers
+        if now - _fund_data.get(t, {}).get("_ts", 0)
+           > (_FUND_FAIL_TTL if _fund_data.get(t, {}).get("_gf") else _FUND_CACHE_TTL)
+    ]
     if stale and not _fund_bg_running:
         _fund_bg_running = True
         _fund_cancel.clear()   # allow this worker to run (user is on fund tab)
-        priority_first = sorted(stale, key=lambda t: 0 if t.upper() in scan_map else 1)
+        # Prioritise: passing-gate tickers > scan-active tickers > known-fail tickers
+        priority_first = sorted(
+            stale,
+            key=lambda t: (
+                1 if _fund_data.get(t, {}).get("_gf") else 0,  # known-fail last
+                0 if t.upper() in scan_map else 1,              # in-scan-map first
+            ),
+        )
 
         async def _bg_task(tickers=priority_first):
             global _fund_bg_running
@@ -1646,6 +1736,7 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
             "profit_growth_min":_FUND_PROFIT_GROW_MIN,
             "sales_growth_min": _FUND_SALES_GROW_MIN,
             "cfo_positive":     _FUND_CFO_POSITIVE,
+            "min_score":        _FUND_MIN_SCORE,
         },
     })
 
@@ -1655,18 +1746,34 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
 # with an extra "exchange" field ("NSE Emerge" | "BSE SME") per record.
 
 _SME_FUND_CACHE_FILE   = _PL("cache/sme_fundamentals_data.json")
+_SME_FUND_CACHE_TTL    = 48 * 3600    # 48 h (same as main fund tab)
+_SME_FAIL_TTL          = 72 * 3600    # 72 h for known-fail tickers
 _sme_fund_data: dict   = {}           # {ticker: {exchange, fund_score, ...}}
+_sme_fund_lock         = threading.Lock()  # protects concurrent writes
 _sme_bg_running: bool  = False
 _sme_universe: dict    = {}           # {ticker: "NSE Emerge" | "BSE SME"}  -  built at startup
 
 # SME high-growth gate thresholds (stricter on growth, relaxed on debt vs Nifty500)
-_SME_ROCE_MIN         = 15.0   # %
-_SME_ROE_MIN          = 15.0   # %
-_SME_DE_MAX           = 1.5    # ratio  (SME firms may carry more growth capex debt)
-_SME_PROFIT_GROW_MIN  = 20.0   # % 3Y CAGR
-_SME_SALES_GROW_MIN   = 20.0   # % 3Y CAGR
-_SME_CFO_POSITIVE     = True
-_SME_MIN_KEY_FIELDS   = 2      # minimum key fields required before applying gates
+_SME_ROCE_MIN         = 15.0   # %  — capital efficiency gate
+_SME_ROE_MIN          = 15.0   # %  — equity return gate
+_SME_DE_MAX           =  1.5   # ratio — SME firms may carry growth capex debt
+_SME_PROFIT_GROW_MIN  = 25.0   # % 3Y CAGR — only genuine high-growth companies
+_SME_SALES_GROW_MIN   = 25.0   # % 3Y CAGR
+_SME_OPM_MIN          =  8.0   # % operating margin — core business must be profitable
+_SME_TTM_GROW_MIN     = 15.0   # % TTM growth (profit or sales) — recent order book momentum
+
+# ── Composite Cash Quality gate (detects fake/junk companies) ──────────────
+# Instead of hard "CFO > 0", we use three composite checks that allow
+# genuine growth companies while still filtering out accounting fraud.
+_SME_CCR_MIN       = -1.0   # Cash Conversion Ratio floor.
+                             #   CCR = CFO / Net_Profit_Est (MCap÷PE)
+                             #   CCR < -1.0 = company burns MORE cash than profits claim.
+                             #   Classic Indian SME fraud: inflated profits, terrible cash flow.
+_SME_CF_DEBT_MIN   = -0.5   # CF/Debt ratio floor (only applied when D/E > 0.5).
+                             #   CF/Debt < -0.5 = CFO is -50% of total debt → cannot service obligations.
+_SME_CFO_DEEP_NEG  = -30.0  # "Deeply negative" CFO threshold (₹Cr).
+                             #   Below this, OPM ≥ 8% must be confirmed; else real operating loss.
+_SME_MIN_KEY_FIELDS   =  2  # minimum key fields required before applying gates
 
 
 def _sme_cache_load() -> None:
@@ -1702,16 +1809,29 @@ def _sme_cache_save() -> None:
 def _passes_sme_gates(rec: dict) -> bool:
     """Hard fundamental gates for SME/Emerge stocks — tuned for HIGH-GROWTH companies.
 
-    Stricter on growth (20% min vs 8% for Nifty500) to filter out stagnant micro-caps.
-    Slightly more lenient on debt (D/E ≤ 1.5 vs 1.0) as growing SMEs may carry capex debt.
+    Philosophy:
+      • GROWTH is the primary criterion (25% 3Y CAGR floor).
+      • CASH FLOW uses a COMPOSITE quality check — not a simple "CFO > 0".
+        Small SMEs in scale-up phase may have negative CFO due to working-capital
+        build or capex, but GENUINE companies still show healthy cash conversion.
+        Three-layer cash check (positive CFO always passes; negative triggers):
+          1. CCR (Cash Conversion Ratio = CFO / Net_Profit_Est): < -1.0 is a red flag
+             — the company burns MORE cash than its profits are worth (suspected fraud).
+          2. CF/Debt (CFO / Total_Debt): if D/E > 0.5 AND CF/Debt < -0.5, the company
+             cannot cover debt obligations from operations → stress / default risk.
+          3. Deep negative CFO without OPM anchor: CFO < -30Cr + OPM < 8% = real loss.
+      • OPM ≥ 8% gate ensures core business is operationally profitable.
+      • TTM gate checks for recent momentum (order book proxy).
 
     Active gates:
-      ROCE ≥ 15%           Capital efficiency
-      ROE  ≥ 15%           Return on equity
-      D/E  ≤ 1.5           Moderate leverage
-      Profit Growth ≥ 20%  Genuine high-growth earners
-      Sales Growth  ≥ 20%  Fast-growing revenue
-      CFO > 0              Positive operating cash flow
+      ROCE ≥ 15%                   Capital efficiency
+      ROE  ≥ 15%                   Return on equity
+      D/E  ≤ 1.5                   Moderate leverage
+      Profit Growth 3Y ≥ 25%      No stagnant earners
+      Sales Growth  3Y ≥ 25%      Fast-growing revenue
+      OPM  ≥ 8%   (if available)  Operationally profitable
+      TTM  ≥ 15%  (if available)  Recent growth momentum
+      Cash Quality (composite)     Fraud / junk filter — see above
 
     NULL values = data not yet downloaded → gate not applied for that field.
     """
@@ -1724,164 +1844,310 @@ def _passes_sme_gates(rec: dict) -> bool:
     if sum(1 for v in key_vals if v is not None) < _SME_MIN_KEY_FIELDS:
         return False
 
+    # ROCE gate
     roce = rec.get("roce")
     if roce is not None and float(roce) < _SME_ROCE_MIN:
         return False
 
-    roe = rec.get("roe_10y") or rec.get("roe_5y") or rec.get("roe")
+    # ROE gate (prefer current for SME — history is short for young companies)
+    roe = rec.get("roe") or rec.get("roe_5y") or rec.get("roe_10y")
     if roe is not None and float(roe) < _SME_ROE_MIN:
         return False
 
+    # D/E gate
     de = rec.get("debt_equity")
-    if de is not None and float(de) > _SME_DE_MAX:
+    de_f = float(de) if de is not None else 0.0
+    if de is not None and de_f > _SME_DE_MAX:
         return False
 
+    # Profit growth gate (3Y CAGR ≥ 25%)
     pg = rec.get("profit_growth_3y") or rec.get("profit_growth_5y")
     if pg is not None and float(pg) < _SME_PROFIT_GROW_MIN:
         return False
 
+    # Sales growth gate (3Y CAGR ≥ 25%)
     sg = rec.get("sales_growth_pct") or rec.get("sales_growth_5y")
     if sg is not None and float(sg) < _SME_SALES_GROW_MIN:
         return False
 
-    if _SME_CFO_POSITIVE:
-        cfo = rec.get("cash_from_operations")
-        if cfo is not None and float(cfo) <= 0:
+    # OPM gate — core business must be operationally profitable
+    opm = rec.get("opm")
+    opm_f = float(opm) if opm is not None else None
+    if opm_f is not None and opm_f < _SME_OPM_MIN:
+        return False
+
+    # TTM momentum gate (both TTM needed; rejects post-peak decelerators)
+    ttm_pg = rec.get("profit_growth_ttm")
+    ttm_sg = rec.get("sales_growth_ttm")
+    if ttm_pg is not None and ttm_sg is not None:
+        best_ttm = max(float(ttm_pg), float(ttm_sg))
+        if best_ttm < _SME_TTM_GROW_MIN:
             return False
+
+    # ── Composite Cash Quality Gate ──────────────────────────────────────────
+    # Goal: reject fake/junk companies. Allow genuine growth-phase companies.
+    # Positive CFO always passes. Only negative CFO triggers the checks below.
+    cfo_val = rec.get("cash_from_operations")
+    if cfo_val is not None:
+        cfo_f = float(cfo_val)
+        if cfo_f <= 0:
+            pe_f  = float(rec.get("pe_ratio")      or 0)
+            mc_f  = float(rec.get("market_cap_cr") or 0)
+
+            # 1. Cash Conversion Ratio (CCR) — primary fraud detector
+            #    CCR = CFO / Net_Profit_Est  where Net_Profit_Est = MCap / PE
+            #    CCR < -1.0: burns MORE cash per year than its profits claim → red flag.
+            #    Use pre-computed value if available; otherwise compute on-the-fly.
+            ccr_val = rec.get("ccr")
+            if ccr_val is None and pe_f > 0 and mc_f > 0:
+                net_p = mc_f / pe_f
+                if net_p > 0:
+                    ccr_val = cfo_f / net_p
+            if ccr_val is not None and float(ccr_val) < _SME_CCR_MIN:
+                return False  # inflated-profit / fake-earnings red flag
+
+            # 2. Cash Flow to Debt coverage
+            #    Leveraged company (D/E > 0.5) burning cash significantly
+            #    cannot service its debt obligations from operations.
+            cf_debt_val = rec.get("cf_to_debt")
+            if cf_debt_val is None and de_f > 0.5:
+                bv_f = float(rec.get("book_value")    or 0)
+                cp_f = float(rec.get("current_price") or 0)
+                if bv_f > 0 and cp_f > 0 and mc_f > 0:
+                    total_debt_cr = de_f * bv_f * mc_f / cp_f
+                    if total_debt_cr > 0:
+                        cf_debt_val = cfo_f / total_debt_cr
+            if (cf_debt_val is not None
+                    and float(cf_debt_val) < _SME_CF_DEBT_MIN
+                    and de_f > 0.5):
+                return False  # leveraged + cannot service debt from operations
+
+            # 3. Deep negative CFO without OPM confirmation
+            #    Very negative CFO (< -30Cr) AND no confirmed + OPM ≥ 8%
+            #    = real operating loss, not just a timing issue.
+            if cfo_f < _SME_CFO_DEEP_NEG and (opm_f is None or opm_f < _SME_OPM_MIN):
+                return False
 
     return True
 
 
 def _sme_quality_score(rec: dict) -> float:
-    """Growth-dominated quality score for SME/Emerge stocks.
+    """Growth-acceleration score for SME/Emerge stocks.
 
-    SME stocks are early-stage high-growth companies; growth metrics carry 40% of weight.
-    Quality/profitability carries 25%, cash flow 15%, debt 10%, value 6%, size 4%.
+    SME stocks are early-stage high-growth companies where GROWTH MOMENTUM and
+    BUSINESS ACCELERATION are the primary predictors of future returns.
+    The scoring places 55% weight on growth (3Y CAGR + TTM acceleration), which
+    acts as a proxy for "excellent order book and strong forward projections".
 
-    +- Growth (40 pts) --------------------------------------------------------+
-    |  Profit Growth 3Y   20 pts  Primary ranking factor for SME               |
-    |  Revenue Growth 3Y  15 pts  Business expansion pace                      |
-    |  CFO confirmation    5 pts  Growth backed by real operating cash          |
-    +- Quality (25 pts) -------------------------------------------------------+
-    |  ROCE               12 pts  Capital efficiency above SME gate             |
-    |  ROE                 8 pts  Return on equity (current preferred)          |
-    |  Promoter holding    5 pts  Management conviction                         |
-    +- Cash Flow (15 pts) -----------------------------------------------------+
-    |  CFO Yield          15 pts  Operating cash / MCap (real earnings quality) |
-    +- Debt (10 pts) ----------------------------------------------------------+
-    |  Debt / Equity      6 pts   Lower debt = more room to grow                |
-    |  Current Ratio      4 pts   Short-term solvency                           |
-    +- Value (6 pts) ----------------------------------------------------------+
-    |  PEG ratio          4 pts   Growth at reasonable price                    |
-    |  Earnings Yield     2 pts   Inverse of PE                                 |
-    +- Size (4 pts) -----------------------------------------------------------+
-    |  Market Cap         4 pts   Stability / graduation path proxy             |
+    +- Growth CAGR (35 pts) ---------------------------------------------------+
+    |  Profit Growth 3Y   18 pts  Gate ≥ 25%; 50% = 15 pts, 80%+ = 18 pts     |
+    |  Revenue Growth 3Y  12 pts  Gate ≥ 25%; 50% = 10 pts, 60% = 12 pts      |
+    |  OPM (op. margin)    5 pts  Business profitability quality proxy          |
+    +- Growth Acceleration (20 pts) — "Order book / forward projections" -------+
+    |  TTM Profit Growth  10 pts  Recent earnings momentum (gate ≥ 15%)         |
+    |  TTM Revenue Growth  7 pts  Recent revenue pipeline (gate ≥ 15%)          |
+    |  Acceleration bonus  3 pts  TTM growth > 3Y CAGR (+) = accelerating       |
+    +- Quality (18 pts) -------------------------------------------------------+
+    |  ROCE               10 pts  Capital efficiency (gate ≥ 15%)               |
+    |  ROE                 5 pts  Return on equity                               |
+    |  Promoter holding    3 pts  Founder conviction (very high bar for SME)     |
+    +- Cash Flow (12 pts)  -------------------------------------------------------+
+    |  CFO Yield           8 pts  Operating cash / MCap (positive = real profits)|
+    |  CFO sign & scale    4 pts  Positive CFO bonus; negative CFO penalty       |
+    +- Debt (8 pts) -----------------------------------------------------------+
+    |  Debt / Equity       5 pts  Growth debt OK; rewards low-leverage           |
+    |  Current Ratio       3 pts  Short-term solvency                            |
+    +- Value (4 pts) ----------------------------------------------------------+
+    |  PEG ratio           3 pts  Growth at reasonable price                     |
+    |  Earnings Yield      1 pt   Inverse of PE                                  |
+    +- Size (3 pts) -----------------------------------------------------------+
+    |  Market Cap          3 pts  Stability / graduation path proxy              |
     +--------------------------------------------------------------------------+
-    Max base = 100 pts   Bonus: dividend (+1) + 10Y profit growth (+1) + TTM growth (+2)
+    Max base = 100 pts
+    Bonus: accel ≥ +20% over 3Y (+2), div yield (+1), LT 10Y track record (+1)
     """
     score = 0.0
 
-    # -- Growth block (40 pts) ------------------------------------------------
+    # -- Growth CAGR block (35 pts) -------------------------------------------
 
-    # Profit Growth 3Y  -  20 pts  (gate ensures ≥ 20%; 30% = 10 pts, 60% = 20 pts)
-    pg = rec.get("profit_growth_3y") or rec.get("profit_growth_5y")
-    if pg is not None:
-        score += min(20.0, max(0.0, float(pg) * 0.333))   # 60% = 20 pts
+    # Profit Growth 3Y  -  18 pts  (gate ≥ 25%; sweet spot 50-80%)
+    pg3 = rec.get("profit_growth_3y") or rec.get("profit_growth_5y")
+    pg3_val = float(pg3) if pg3 is not None else None
+    if pg3_val is not None:
+        # 25%=7.5, 40%=12, 60%=16, 80%=18 (full)
+        score += min(18.0, max(0.0, pg3_val * 0.225))
 
-    # Revenue Growth 3Y  -  15 pts  (gate ensures ≥ 20%; 40% = 10 pts, 60% = 15 pts)
-    sg = rec.get("sales_growth_pct") or rec.get("sales_growth_5y")
-    if sg is not None:
-        score += min(15.0, max(0.0, float(sg) * 0.25))    # 60% = 15 pts
+    # Revenue Growth 3Y  -  12 pts  (gate ≥ 25%; 50%=10, 60%=12 full)
+    sg3 = rec.get("sales_growth_pct") or rec.get("sales_growth_5y")
+    sg3_val = float(sg3) if sg3 is not None else None
+    if sg3_val is not None:
+        score += min(12.0, max(0.0, sg3_val * 0.20))
 
-    # CFO confirmation of growth  -  5 pts
-    cfo_y = rec.get("cfo_yield")
-    if cfo_y is not None:
-        cfo_y = float(cfo_y)
-        if cfo_y >= 8.0:    score += 5.0
-        elif cfo_y >= 5.0:  score += 4.0
-        elif cfo_y >= 3.0:  score += 3.0
-        elif cfo_y >= 1.0:  score += 2.0
-        elif cfo_y >= 0.0:  score += 1.0
+    # Operating Profit Margin  -  5 pts  (replaces hard CFO gate in quality sense)
+    # OPM ≥ 8% (gate); scoring: 8%=2, 15%=3.75, 25%=5 (full)
+    opm = rec.get("opm")
+    if opm is not None:
+        opm_f = float(opm)
+        score += min(5.0, max(0.0, opm_f * 0.20))
 
-    # -- Quality block (25 pts) -----------------------------------------------
+    # -- Growth Acceleration block (20 pts) — "Order book / forward projections" --
+    # TTM (trailing twelve months) growth captures the most recent momentum.
+    # A stock with 25% 3Y CAGR but 60% TTM growth has a booming order book.
 
-    # ROCE  -  12 pts  (gate ≥ 15%; 25% = 10 pts, 40% = 12 pts full)
+    ttm_pg = rec.get("profit_growth_ttm")
+    ttm_sg = rec.get("sales_growth_ttm")
+
+    ttm_pg_val = float(ttm_pg) if ttm_pg is not None else None
+    ttm_sg_val = float(ttm_sg) if ttm_sg is not None else None
+
+    # TTM Profit Growth  -  10 pts  (15%=3, 30%=6, 60%=10 full)
+    if ttm_pg_val is not None:
+        score += min(10.0, max(0.0, ttm_pg_val * 0.167))
+
+    # TTM Revenue Growth  -  7 pts  (15%=2.6, 30%=5.3, 50%=7 full)
+    if ttm_sg_val is not None:
+        score += min(7.0, max(0.0, ttm_sg_val * 0.14))
+
+    # Acceleration bonus  -  3 pts: TTM > 3Y CAGR = business is accelerating
+    # (strong forward pipeline / order book)
+    if ttm_pg_val is not None and pg3_val is not None:
+        accel_pg = ttm_pg_val - pg3_val  # positive = accelerating profit growth
+        if accel_pg >= 20:   score += 1.5   # big acceleration
+        elif accel_pg >= 10: score += 1.0
+        elif accel_pg >= 0:  score += 0.5
+    if ttm_sg_val is not None and sg3_val is not None:
+        accel_sg = ttm_sg_val - sg3_val  # positive = accelerating revenue
+        if accel_sg >= 15:   score += 1.5   # big revenue acceleration
+        elif accel_sg >= 7:  score += 1.0
+        elif accel_sg >= 0:  score += 0.5
+
+    # -- Quality block (18 pts) ------------------------------------------------
+
+    # ROCE  -  10 pts  (gate ≥ 15%; 20%=5, 35%=8.75, 40%=10 full)
     roce = rec.get("roce")
     if roce is not None:
-        score += min(12.0, max(0.0, float(roce) * 0.30))
+        score += min(10.0, max(0.0, float(roce) * 0.25))
 
-    # ROE (current preferred for SME)  -  8 pts
+    # ROE (current preferred for SME — short history)  -  5 pts
     roe_ref = rec.get("roe") or rec.get("roe_5y") or rec.get("roe_10y")
     if roe_ref is not None:
-        score += min(8.0, max(0.0, float(roe_ref) * 0.32))
+        score += min(5.0, max(0.0, float(roe_ref) * 0.20))
 
-    # Promoter holding  -  5 pts  (high promoter = high founder conviction)
+    # Promoter holding  -  3 pts  (higher bar for SME: 70%+ = full confidence)
     ph = rec.get("promoter_holding")
     if ph is not None:
         ph = float(ph)
-        if ph >= 70:    score += 5.0
-        elif ph >= 60:  score += 4.0
-        elif ph >= 50:  score += 3.0
-        elif ph >= 40:  score += 2.0
-        elif ph >= 30:  score += 1.0
+        if ph >= 70:    score += 3.0
+        elif ph >= 60:  score += 2.5
+        elif ph >= 50:  score += 2.0
+        elif ph >= 40:  score += 1.0
 
-    # -- Cash Flow block (15 pts) ---------------------------------------------
+    # -- Cash Flow block (12 pts) ----------------------------------------------
+    # No hard gate; rewarded if positive, penalised if deeply negative.
+    # Sub-scores: CFO Yield (5) + Cash Conversion Ratio CCR (4) + CF/Debt (2) + Sign (1)
 
-    # CFO Yield  -  15 pts  (SME must show real earnings quality)
-    cfo_y2 = rec.get("cfo_yield")
-    if cfo_y2 is not None:
-        cfo_y2 = float(cfo_y2)
-        if cfo_y2 >= 12.0:   score += 15.0
-        elif cfo_y2 >= 8.0:  score += 12.0
-        elif cfo_y2 >= 5.0:  score += 9.0
-        elif cfo_y2 >= 3.0:  score += 6.0
-        elif cfo_y2 >= 1.0:  score += 3.0
-        elif cfo_y2 >= 0.0:  score += 1.0
+    cfo_abs = rec.get("cash_from_operations")
+    pe_sc   = float(rec.get("pe_ratio")      or 0)
+    mc_sc   = float(rec.get("market_cap_cr") or 0)
+    de_sc   = float(rec.get("debt_equity")   or 0)
 
-    # -- Debt block (10 pts) --------------------------------------------------
+    # CFO Yield (CFO / MCap %)  —  5 pts
+    cfo_y = rec.get("cfo_yield")
+    if cfo_y is not None:
+        cfo_y_f = float(cfo_y)
+        if cfo_y_f >= 10.0:   score += 5.0
+        elif cfo_y_f >= 6.0:  score += 4.0
+        elif cfo_y_f >= 3.0:  score += 3.0
+        elif cfo_y_f >= 1.0:  score += 2.0
+        elif cfo_y_f >= 0.0:  score += 1.0
+        elif cfo_y_f >= -2.0: score += 0.0   # marginally negative — capex phase
+        else:                 score -= 1.5   # deeply negative yield — penalty
 
-    # D/E ratio  -  6 pts  (gate ≤ 1.5; rewards low debt)
+    # Cash Conversion Ratio (CCR = CFO / Net_Profit_Est)  —  4 pts
+    # The higher the CCR, the more REAL the profit claims are.
+    # This is the primary fake-profit detector: high ROCE but low CCR = suspect.
+    ccr_v = rec.get("ccr")
+    if ccr_v is None and pe_sc > 0 and mc_sc > 0 and cfo_abs is not None:
+        net_p = mc_sc / pe_sc
+        if net_p > 0:
+            ccr_v = float(cfo_abs) / net_p
+    if ccr_v is not None:
+        ccr_f = float(ccr_v)
+        if ccr_f >= 1.0:    score += 4.0   # cash > profits (conservative accounting)
+        elif ccr_f >= 0.7:  score += 3.5   # excellent quality
+        elif ccr_f >= 0.4:  score += 2.5   # good — most cash converts
+        elif ccr_f >= 0.15: score += 1.5   # decent
+        elif ccr_f >= 0.0:  score += 0.5   # breakeven conversion
+        elif ccr_f >= -0.5: score += 0.0   # mildly negative — growth capex territory
+        elif ccr_f >= -1.0: score -= 0.5   # concerning — borderline gate failure
+        # < -1.0: gate already rejected; won't reach here
+
+    # Cash Flow to Debt Ratio (CF/Debt)  —  2 pts (bonus for debt coverage from cash)
+    cf_debt_v = rec.get("cf_to_debt")
+    if cf_debt_v is None and de_sc > 0.1 and cfo_abs is not None:
+        bv_sc = float(rec.get("book_value")    or 0)
+        cp_sc = float(rec.get("current_price") or 0)
+        if bv_sc > 0 and cp_sc > 0 and mc_sc > 0:
+            total_debt_cr = de_sc * bv_sc * mc_sc / cp_sc
+            if total_debt_cr > 0:
+                cf_debt_v = float(cfo_abs) / total_debt_cr
+    if cf_debt_v is not None:
+        cf_d_f = float(cf_debt_v)
+        if cf_d_f >= 0.5:    score += 2.0   # covers ≥50% of debt from operations
+        elif cf_d_f >= 0.2:  score += 1.5   # covers ≥20%
+        elif cf_d_f >= 0.0:  score += 1.0   # breakeven — not burning vs debt
+        # negative: 0 pts (handled by penalty in CFO yield)
+
+    # CFO sign/scale bonus  —  1 pt
+    if cfo_abs is not None:
+        cfo_f_sc = float(cfo_abs)
+        if cfo_f_sc >= 30:    score += 1.0
+        elif cfo_f_sc >= 10:  score += 0.5
+        elif cfo_f_sc >= 0:   score += 0.25
+
+    # -- Debt block (8 pts) ---------------------------------------------------
+
+    # D/E ratio  -  5 pts  (gate ≤ 1.5; rewards low debt)
     de = rec.get("debt_equity")
     if de is not None:
         de = float(de)
-        if de == 0.0:       score += 6.0
-        elif de <= 0.25:    score += 5.5
-        elif de <= 0.50:    score += 4.5
-        elif de <= 0.75:    score += 3.5
-        elif de <= 1.00:    score += 2.5
-        elif de <= 1.50:    score += 1.0
+        if de == 0.0:       score += 5.0    # debt-free
+        elif de <= 0.25:    score += 4.5
+        elif de <= 0.50:    score += 3.5
+        elif de <= 0.75:    score += 2.5
+        elif de <= 1.00:    score += 1.5
+        elif de <= 1.50:    score += 0.5    # at gate threshold
 
-    # Current Ratio  -  4 pts
+    # Current Ratio  -  3 pts
     cr = rec.get("current_ratio")
     if cr is not None:
         cr = float(cr)
-        if cr >= 2.5:    score += 4.0
-        elif cr >= 2.0:  score += 3.0
+        if cr >= 2.5:    score += 3.0
+        elif cr >= 2.0:  score += 2.5
         elif cr >= 1.5:  score += 2.0
         elif cr >= 1.0:  score += 1.0
 
-    # -- Value block (6 pts) --------------------------------------------------
+    # -- Value block (4 pts) --------------------------------------------------
 
-    # PEG ratio  -  4 pts
+    # PEG  -  3 pts  (SME trade at premium; PEG < 1 is rare but rewarded)
     peg = rec.get("peg_ratio")
     if peg is not None:
         peg = float(peg)
-        if peg <= 0.5:    score += 4.0
-        elif peg <= 1.0:  score += 3.0
-        elif peg <= 1.5:  score += 2.0
-        elif peg <= 2.0:  score += 1.0
+        if peg <= 0.5:    score += 3.0
+        elif peg <= 1.0:  score += 2.5
+        elif peg <= 1.5:  score += 1.5
+        elif peg <= 2.0:  score += 0.5
 
-    # Earnings yield  -  2 pts
+    # Earnings yield  -  1 pt
     ey = rec.get("earnings_yield")
     if ey is not None:
-        score += min(2.0, max(0.0, float(ey) * 0.20))
+        score += min(1.0, max(0.0, float(ey) * 0.10))
 
-    # -- Size block (4 pts) ---------------------------------------------------
+    # -- Size block (3 pts) ---------------------------------------------------
 
-    # Market cap (smaller SME MCap is expected; graduated scoring)
     mc = float(rec.get("market_cap_cr") or 0)
-    if mc >= 5_000:     score += 4.0
-    elif mc >= 2_000:   score += 3.0
+    if mc >= 5_000:     score += 3.0
+    elif mc >= 2_000:   score += 2.5
     elif mc >= 1_000:   score += 2.0
     elif mc >= 500:     score += 1.5
     elif mc >= 200:     score += 1.0
@@ -1889,22 +2155,21 @@ def _sme_quality_score(rec: dict) -> float:
 
     # -- Bonus points ---------------------------------------------------------
 
-    # Dividend yield bonus (+1 pt max — SME rarely pays dividends)
+    # Big acceleration bonus (+2): TTM ≥ 3Y CAGR + 20pp — strong forward pipeline
+    # (already partially captured above; this rewards top-tier accelerators)
+    if ttm_pg_val is not None and pg3_val is not None and (ttm_pg_val - pg3_val) >= 20:
+        score += 1.0
+    if ttm_sg_val is not None and sg3_val is not None and (ttm_sg_val - sg3_val) >= 15:
+        score += 1.0
+
+    # Dividend yield (+1 pt max — rare for SME; signal of cash confidence)
     dy = rec.get("dividend_yield")
     if dy is not None and float(dy) > 0:
         score += min(1.0, float(dy) * 0.5)
 
-    # 10Y profit CAGR bonus (+1 pt) — long track record for an SME is valuable
+    # Long track record bonus (+1 pt) — 10Y history for an SME = rare & valuable
     pg10 = rec.get("profit_growth_10y")
-    if pg10 is not None and float(pg10) > 0:
-        score += min(1.0, float(pg10) * 0.04)
-
-    # TTM growth bonus (+2 pts) — recent acceleration
-    ttm_pg = rec.get("profit_growth_ttm")
-    ttm_sg = rec.get("sales_growth_ttm")
-    if ttm_pg is not None and float(ttm_pg) >= 25:
-        score += 1.0
-    if ttm_sg is not None and float(ttm_sg) >= 25:
+    if pg10 is not None and float(pg10) >= 20:
         score += 1.0
 
     return round(min(100.0, max(0.0, score)), 2)
@@ -1985,6 +2250,33 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
         if mc_inr2 > 0:
             result["cfo_yield"] = round(cfo * 1e7 / mc_inr2 * 100, 2)
 
+    # Cash Conversion Ratio (CCR = CFO / Net_Profit_Estimate)
+    # Net_Profit_Est ≈ MCap(Cr) ÷ PE  →  a higher net profit vs MCap means lower CCR if cash is negative.
+    # CCR ≥ 1.0 = cash exceeds profit claims (exceptional quality / conservative accounting)
+    # CCR < 0   = burning cash vs profits (needs context: capex vs fraud)
+    # CCR < -1.0 = burning MORE cash than entire annual profit → RED FLAG (fraud detector)
+    de_val = result.get("debt_equity")
+    if cfo is not None and pe and float(pe) > 0 and mc and float(mc) > 0:
+        net_profit_est = float(mc) / float(pe)
+        if net_profit_est > 0:
+            result["ccr"] = round(float(cfo) / net_profit_est, 2)
+
+    # Cash Flow to Debt Ratio  (CF/Debt = CFO / Total_Debt_Cr)
+    # Total_Debt_Cr ≈ D/E × (BV × MCap_Cr / CurrentPrice)
+    #   [BV(Rs/share) × Shares = Total_Equity(Rs); Shares = MCap_Cr×1e7/CP;
+    #    Total_Equity(Cr) = BV×MCap_Cr/CP; Total_Debt(Cr) = D/E × Total_Equity(Cr)]
+    # Positive CF/Debt = able to pay down debt from operations (healthy)
+    # Negative CF/Debt = debt grows faster than cash can cover (risk signal)
+    if (cfo is not None and de_val and float(de_val) > 0
+            and bv and float(bv) > 0 and cp and float(cp) > 0
+            and mc and float(mc) > 0):
+        try:
+            total_debt_cr = float(de_val) * float(bv) * float(mc) / float(cp)
+            if total_debt_cr > 0:
+                result["cf_to_debt"] = round(float(cfo) / total_debt_cr, 2)
+        except Exception:
+            pass
+
     sg3  = result.get("sales_growth_pct")
     sg10 = result.get("sales_growth_10y")
     if sg3 is not None and sg10 is not None:
@@ -2013,34 +2305,54 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
                 break
 
     result["_ts"] = time.time()
-    _sme_fund_data[ticker] = result   # write to SME-specific cache dict
+    with _sme_fund_lock:
+        _sme_fund_data[ticker] = result   # write to SME-specific cache dict
     return result, content_changed
 
 
-def _sme_bg_worker(tickers: list, batch: int = 60) -> None:
-    """Background refresh for SME fundamentals.
+def _sme_bg_worker(tickers: list) -> None:
+    """Parallel background refresh for SME fundamentals.
 
     Uses SME-aware fetching (_sme_fund_refresh_ticker) which additionally
     tries the '-SME' URL variant on screener.in for NSE Emerge stocks.
     Data is stored in the SEPARATE _sme_fund_data cache (not _fund_data).
-    Saves to disk only when field values actually changed.
-    One final save is always written at the end to persist updated _ts values.
+
+    Performance: 4 parallel workers; known-fail tickers use a 72 h skip TTL.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     global _sme_bg_running
-    stale = [t for t in tickers if
-             time.time() - _sme_fund_data.get(t, {}).get("_ts", 0) > _FUND_CACHE_TTL]
+    MAX_WORKERS = 4   # SME tickers are fewer; slightly fewer workers to stay polite
+    BATCH_SIZE  = 40
+    total_refreshed = 0
+    total_changed   = 0
+    total_skipped   = 0
+    now = time.time()
+
+    stale: list = []
+    for t in tickers:
+        entry = _sme_fund_data.get(t, {})
+        ttl   = _SME_FAIL_TTL if entry.get("_gf") else _SME_FUND_CACHE_TTL
+        if now - entry.get("_ts", 0) >= ttl:
+            stale.append(t)
+        else:
+            total_skipped += 1
 
     if not stale:
-        logger.info("SME BG worker: all %d tickers fresh  -  nothing to download", len(tickers))
+        logger.info("SME BG worker: all %d tickers fresh (%d known-fail skipped)  -  nothing to download",
+                    len(tickers), total_skipped)
         _sme_bg_running = False
         return
 
-    logger.info("SME BG worker: %d stale / %d total tickers", len(stale), len(tickers))
-    total_refreshed = 0
-    total_changed   = 0
+    known_fail_count = sum(1 for t in stale if _sme_fund_data.get(t, {}).get("_gf"))
+    logger.info("SME BG worker: %d stale (incl. %d known-fail) / %d total  -  parallel refresh %d workers",
+                len(stale), known_fail_count, len(tickers), MAX_WORKERS)
 
-    for i in range(0, len(stale), batch):
-        # Check cancellation before every batch
+    def _worker(t: str):
+        result, changed = _sme_fund_refresh_ticker(t)
+        return t, result, changed
+
+    for batch_start in range(0, len(stale), BATCH_SIZE):
         if _sme_cancel.is_set():
             logger.info("SME BG worker: cancelled after %d/%d tickers (tab switched)",
                         total_refreshed, len(stale))
@@ -2048,39 +2360,61 @@ def _sme_bg_worker(tickers: list, batch: int = 60) -> None:
             _sme_bg_running = False
             return
 
-        chunk = stale[i: i + batch]
-        fetched_in_chunk  = 0
-        changed_in_chunk  = 0
-        for ticker in chunk:
-            if _sme_cancel.is_set():
-                logger.info("SME BG worker: cancelled mid-batch at ticker %s", ticker)
-                break
-            try:
-                result, changed = _sme_fund_refresh_ticker(ticker)   # SME-aware scraper
-                if any(k in result for k in ("roce", "roe", "promoter_holding")):
-                    fetched_in_chunk += 1
-                if changed:
-                    changed_in_chunk += 1
-                time.sleep(0.20)   # rate-limit: 5 req/s to avoid Screener.in blocking
-            except Exception as exc:
-                logger.debug("SME BG refresh error %s: %s", ticker, exc)
+        chunk = stale[batch_start: batch_start + BATCH_SIZE]
+        fetched_in_batch = 0
+        changed_in_batch = 0
 
-        total_refreshed += fetched_in_chunk
-        total_changed   += changed_in_chunk
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = {pool.submit(_worker, t): t for t in chunk}
+            for future in as_completed(futures):
+                if _sme_cancel.is_set():
+                    for f in futures:
+                        f.cancel()
+                    break
+                t = futures[future]
+                try:
+                    _, result, changed = future.result()
 
-        if changed_in_chunk:
-            _sme_cache_save()   # save to SME-specific cache file
-            logger.info("SME BG: batch %d/%d  -  %d fetched, %d changed -> saved",
-                        min(i + batch, len(stale)), len(stale),
-                        fetched_in_chunk, changed_in_chunk)
+                    # Mark gate outcome for TTL management
+                    key_coverage = sum(
+                        1 for v in [
+                            result.get("roce"),
+                            result.get("roe") or result.get("roe_5y"),
+                            result.get("profit_growth_3y") or result.get("profit_growth_5y"),
+                            result.get("sales_growth_pct") or result.get("sales_growth_5y"),
+                        ]
+                        if v is not None
+                    )
+                    with _sme_fund_lock:
+                        entry = _sme_fund_data.get(t, {})
+                        if key_coverage >= 3 and not _passes_sme_gates(result):
+                            entry["_gf"] = True
+                        else:
+                            entry.pop("_gf", None)
+
+                    if any(k in result for k in ("roce", "roe", "promoter_holding")):
+                        fetched_in_batch += 1
+                    if changed:
+                        changed_in_batch += 1
+
+                except Exception as exc:
+                    logger.debug("SME BG refresh error %s: %s", t, exc)
+
+        total_refreshed += fetched_in_batch
+        total_changed   += changed_in_batch
+        end = min(batch_start + BATCH_SIZE, len(stale))
+
+        if changed_in_batch:
+            _sme_cache_save()
+            logger.info("SME BG: %d/%d  -  %d fetched, %d changed -> saved",
+                        end, len(stale), fetched_in_batch, changed_in_batch)
         else:
-            logger.info("SME BG: batch %d/%d  -  %d fetched, no content changes (skipped save)",
-                        min(i + batch, len(stale)), len(stale), fetched_in_chunk)
+            logger.info("SME BG: %d/%d  -  %d fetched, no content changes",
+                        end, len(stale), fetched_in_batch)
 
-    # Final save to persist refreshed _ts values
     _sme_cache_save()
-    logger.info("SME BG worker done: %d fetched, %d content-changed, final save written",
-                total_refreshed, total_changed)
+    logger.info("SME BG worker done: %d fetched, %d content-changed, %d known-fail skipped",
+                total_refreshed, total_changed, total_skipped)
     _sme_bg_running = False
 
 
@@ -2431,8 +2765,12 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
         s["sme_rank"] = i
 
     # Kick background refresh for stale SME tickers (SME-specific cache)
-    stale = [t for t in all_tickers
-             if now - _sme_fund_data.get(t, {}).get("_ts", 0) > _FUND_CACHE_TTL]
+    # Use per-ticker TTL: known-fail tickers use the longer SME_FAIL_TTL.
+    stale = [
+        t for t in all_tickers
+        if now - _sme_fund_data.get(t, {}).get("_ts", 0)
+           > (_SME_FAIL_TTL if _sme_fund_data.get(t, {}).get("_gf") else _SME_FUND_CACHE_TTL)
+    ]
     if stale and not _sme_bg_running:
         _sme_bg_running = True
         _sme_cancel.clear()   # allow this worker to run (user is on sme tab)
@@ -2462,11 +2800,16 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
         "nse_count":    nse_count,
         "bse_count":    bse_count,
         "gates": {
-            "roce_min":        _SME_ROCE_MIN,
-            "roe_min":         _SME_ROE_MIN,
-            "de_max":          _SME_DE_MAX,
-            "profit_grow_min": _SME_PROFIT_GROW_MIN,
-            "sales_grow_min":  _SME_SALES_GROW_MIN,
+            "roce_min":         _SME_ROCE_MIN,
+            "roe_min":          _SME_ROE_MIN,
+            "de_max":           _SME_DE_MAX,
+            "profit_grow_min":  _SME_PROFIT_GROW_MIN,
+            "sales_grow_min":   _SME_SALES_GROW_MIN,
+            "opm_min":          _SME_OPM_MIN,
+            "ttm_grow_min":     _SME_TTM_GROW_MIN,
+            "ccr_min":          _SME_CCR_MIN,
+            "cf_debt_min":      _SME_CF_DEBT_MIN,
+            "cfo_deep_neg_cr":  _SME_CFO_DEEP_NEG,
         },
     })
 

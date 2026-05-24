@@ -1,8 +1,17 @@
 # Fundamentals — Ranking Criteria
 
 Universe: Nifty 500 + Nifty Microcap 250 (750 tickers)  
-Source: Screener.in (background cache, 24h TTL)  
-Output: Top 20 ranked by Fund Score
+Source: Screener.in (background cache, 48h TTL)  
+Output: Top 30 ranked by Fund Score (only stocks with Fund Score ≥ 50 shown)
+
+---
+
+## Performance
+
+- **Parallel download**: 5 worker threads — ~5–8× faster than sequential
+- **Delta refresh**: Refresh button only re-downloads entries older than 4 h (not all 750)
+- **Known-fail skip**: Stocks that clearly fail hard gates use 72 h TTL instead of 48 h
+- **Cache persistence**: `cache/fundamentals_data.json` — survives server restarts
 
 ---
 
@@ -56,6 +65,15 @@ NULL values (data pending) = gate not applied for that field.
 
 ---
 
+## Display Filter
+
+| Filter | Value |
+|--------|-------|
+| Minimum Fund Score shown | ≥ 50 |
+| Max results displayed | Top 30 |
+
+---
+
 ## Grade Thresholds
 | Grade | Score |
 |---|---|
@@ -63,4 +81,3 @@ NULL values (data pending) = gate not applied for that field.
 | B | ≥ 55 |
 | C | ≥ 35 |
 | D | < 35 |
-

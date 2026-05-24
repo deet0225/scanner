@@ -700,7 +700,7 @@
     </button>
     <div style="margin-left:auto; font-size:0.72rem; color:var(--text-muted); padding:5px 12px;">
       SME High-Growth Rankings &mdash; NSE Emerge &amp; BSE SME IPO &mdash;
-      ROCE&nbsp;≥15% &middot; ROE&nbsp;≥15% &middot; Revenue&nbsp;Growth&nbsp;≥20% &middot; Profit&nbsp;Growth&nbsp;≥20% &middot; CFO&nbsp;&gt;0
+      ROCE&nbsp;≥15% &middot; ROE&nbsp;≥15% &middot; Rev&nbsp;Growth&nbsp;≥25% &middot; Profit&nbsp;Growth&nbsp;≥25% &middot; OPM&nbsp;≥8% &middot; TTM&nbsp;≥15% &middot; CCR&nbsp;&gt;-1.0
     </div>
   </div>
 
@@ -717,7 +717,9 @@
       <div class="scan-status-txt" style="font-size:0.95rem;">Fetching SME fundamental data&hellip;</div>
       <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">
         Loading from Screener.in cache &mdash; may take 60–120 s on first run.<br>
-        <span style="color:var(--yellow);">High-growth gates: ROCE ≥ 15% · ROE ≥ 15% · Revenue Growth ≥ 20% · Profit Growth ≥ 20% · CFO &gt; 0</span>
+        <span style="color:var(--yellow);">Gates: ROCE ≥ 15% · ROE ≥ 15% · Rev Growth ≥ 25% · Profit Growth ≥ 25% · OPM ≥ 8% · TTM ≥ 15%</span><br>
+        <span style="color:var(--yellow);">Cash quality: CCR &gt; −1.0 · CF/Debt &gt; −0.5 (leveraged) · Deep CFO &lt; −30Cr needs OPM confirmation</span><br>
+        <span style="color:var(--text-muted); font-size:0.72rem;">CCR = Cash Conversion Ratio (CFO ÷ Net Profit). CCR &lt; −1 = profit inflation red flag. Positive CFO always passes.</span>
       </div>
     </div>
     <!-- Background download progress bar (shown while bg_running=true) -->
@@ -742,14 +744,14 @@
         <th title="Current market price">Price</th>
         <th>Mkt Cap</th>
         <th title="Debt-to-Equity ratio — lower is better">D/E</th>
-        <th title="Return on Capital Employed">ROCE %</th>
+        <th title="Return on Capital Employed · sub: ROE">ROCE %</th>
+        <th title="Operating Profit Margin — core business profitability (gate ≥ 8%)">OPM %</th>
         <th title="Promoter stake">Promoter</th>
         <th title="FII + DII combined">Inst %</th>
-        <th title="PEG = P/E ÷ Earnings Growth">PEG</th>
-        <th title="CFO Yield = Cash from Operations ÷ MCap × 100">CFO Yield</th>
-        <th title="3-Year Sales Growth">Sales 3Y</th>
-        <th title="3-Year Profit Growth">Profit 3Y</th>
-        <th title="Composite fundamental quality score (12 factors)">Fund Score</th>
+        <th title="CFO Yield + CCR (Cash Conversion Ratio) + CF/Debt — composite cash quality. CCR &lt; -1.0 = fraud red flag">CFO / CCR</th>
+        <th title="3-Year Sales Growth CAGR · sub: TTM + 5Y · ↑ = accelerating vs 3Y">Sales 3Y</th>
+        <th title="3-Year Profit Growth CAGR · sub: TTM + 5Y · ↑ = accelerating vs 3Y">Profit 3Y</th>
+        <th title="Growth-acceleration composite score (55% growth, 18% quality, 12% cash flow, 8% debt, 4% value, 3% size)">Fund Score</th>
       </tr></thead>
       <tbody id="sme-results-body"><tr><td colspan="14">
         <div class="empty-state">
@@ -769,7 +771,8 @@
     <span class="fund-grade fund-grade-d">D &lt;35</span>
     <span style="margin-left:8px; color:var(--blue);">&#127981; NSE Emerge</span>
     <span style="margin-left:4px; color:#38bdf8;">&#127981; BSE SME</span>
-    <span style="margin-left:8px;">Same 12-Factor scoring as Fundamentals tab</span>
+    <span style="margin-left:8px;">Growth-Acceleration scoring: 55% Growth+TTM · 18% Quality · 12% Cash · 8% Debt · 7% Value+Size</span>
+    <span style="margin-left:8px; color:var(--yellow);">↑ = TTM accelerating vs 3Y CAGR (strong order book signal)</span>
   </div>
 </div>
 
@@ -860,7 +863,7 @@
       Refresh
     </button>
     <div style="margin-left:auto; font-size:0.72rem; color:var(--text-muted); padding:5px 12px;">
-      Top 30 Strong Fundamentals &mdash; ROCE &ge;12% &middot; ROE &ge;12% &middot; D/E &le;1.0 &middot; Profit Growth &ge;8% &middot; Sales Growth &ge;5%
+      Top 30 Strong Fundamentals &mdash; ROCE &ge;12% &middot; ROE &ge;12% &middot; D/E &le;1.0 &middot; Profit Growth &ge;8% &middot; Sales Growth &ge;5% &middot; Score &ge;50
     </div>
   </div>
 
@@ -888,7 +891,7 @@
         <div id="fund-progress-bar" style="height:100%; background:linear-gradient(90deg,var(--yellow),var(--green)); border-radius:6px; transition:width 0.5s ease; width:0%;"></div>
       </div>
       <div style="font-size:0.65rem; color:var(--text-muted); margin-top:3px; text-align:right;">
-        Table updates automatically every 8 seconds &mdash; no need to click Refresh
+        Only stale tickers fetched &mdash; cache reused for fresh data &mdash; table auto-updates every 8 s
       </div>
     </div>
     <div class="table-responsive">
@@ -924,6 +927,7 @@
     <span style="color:var(--green);">D/E &le;1.0</span>
     <span style="color:var(--green);">Profit Growth &ge;8%</span>
     <span style="color:var(--green);">Sales Growth &ge;5%</span>
+    <span style="color:var(--yellow);">Score &ge;50</span>
     <span style="margin-left:8px;">Fund Score grades:</span>
     <span class="fund-grade fund-grade-a">A &ge;65</span>
     <span class="fund-grade fund-grade-b">B &ge;45</span>
@@ -2276,8 +2280,11 @@ function renderSME(stocks) {
     tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' +
       '<i class="bi bi-buildings fs-2 d-block mb-2"></i>' +
       '<strong>No SME stocks passed high-growth gates yet</strong><br>' +
-      '<small style="color:var(--text-muted);">Gates: ROCE ≥ 15% · ROE ≥ 15% · Revenue Growth ≥ 20% · Profit Growth ≥ 20% · CFO > 0 · D/E ≤ 1.5<br>' +
-      'Progress bar above shows download status — table populates automatically.</small></div></td></tr>';
+      '<small style="color:var(--text-muted);">' +
+      'Growth: Profit ≥ 25% · Sales ≥ 25% · TTM ≥ 15%<br>' +
+      'Quality: ROCE ≥ 15% · ROE ≥ 15% · OPM ≥ 8% · D/E ≤ 1.5<br>' +
+      'Cash Quality: CCR &gt; -1.0 (fraud filter) · CF/Debt &gt; -0.5 if leveraged · Positive CFO always passes.<br>' +
+      'Progress bar above shows download status.</small></div></td></tr>';
     return;
   }
   var medals = ['🥇','🥈','🥉'];
@@ -2313,14 +2320,21 @@ function renderSME(stocks) {
         (s.current_ratio != null ? '<div class="sector-sub">CR:' + Number(s.current_ratio).toFixed(1) + 'x</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
-    // ROCE — gate is ≥15%; green for ≥30%, yellow for ≥15%
+    // ROCE — gate ≥15%; green ≥30%, yellow ≥15%
     var roce    = s.roce;
     var roceCls = roce == null ? '' : roce >= 30 ? 'vs-sector-pos' : roce >= 15 ? 'de-ok' : 'vs-sector-neg';
     var roceStr = roce != null
       ? '<span class="' + roceCls + '">' + Number(roce).toFixed(1) + '%</span>' +
-        (s.roe_5y  != null ? '<div class="sector-sub">ROE5Y:' + Number(s.roe_5y).toFixed(1) + '%</div>' :
-         s.roe     != null ? '<div class="sector-sub">ROE:'   + Number(s.roe).toFixed(1)    + '%</div>' : '') +
-        (s.roe_10y != null ? '<div class="sector-sub">ROE10Y:' + Number(s.roe_10y).toFixed(0) + '%</div>' : '')
+        (s.roe   != null ? '<div class="sector-sub">ROE:' + Number(s.roe).toFixed(1) + '%</div>' :
+         s.roe_5y != null ? '<div class="sector-sub">ROE5Y:' + Number(s.roe_5y).toFixed(1) + '%</div>' : '')
+      : '<span style="color:var(--text-muted);">N/A</span>';
+
+    // OPM (Operating Profit Margin) — gate ≥8%; green ≥20%, yellow ≥8%
+    var opm    = s.opm;
+    var opmCls = opm == null ? '' : opm >= 20 ? 'vs-sector-pos' : opm >= 8 ? 'de-ok' : 'vs-sector-neg';
+    var opmStr = opm != null
+      ? '<span class="' + opmCls + '">' + Number(opm).toFixed(1) + '%</span>' +
+        (s.net_profit_margin != null ? '<div class="sector-sub">NPM:' + Number(s.net_profit_margin).toFixed(1) + '%</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
     // Promoter
@@ -2338,46 +2352,83 @@ function renderSME(stocks) {
         (s.fii_holding != null ? '<div class="sector-sub">FII:' + Number(s.fii_holding).toFixed(1) + '%</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
-    // PEG + PE sub-line
+    // PEG + PE sub-line (kept for scoring context; column replaced by OPM)
     var peg = s.peg_ratio;
     var pegCls = peg == null ? '' :
       peg <= 0.5 ? 'vs-sector-pos' :
       peg <= 1.0 ? 'vs-sector-pos' :
       peg <= 1.5 ? '' :
       peg <= 2.5 ? 'de-ok' : 'vs-sector-neg';
-    var pegStr = peg != null
-      ? '<span class="' + pegCls + '">' + Number(peg).toFixed(2) + '</span>' +
-        (s.pe_ratio != null ? '<div class="sector-sub">PE:' + Number(s.pe_ratio).toFixed(1) + '</div>' : '') +
-        (s.earnings_yield != null ? '<div class="sector-sub">EY:' + Number(s.earnings_yield).toFixed(1) + '%</div>' : '')
-      : '<span style="color:var(--text-muted);">N/A</span>';
+    // PEG shown as sub-line inside CFO cell for space efficiency
 
-    // CFO Yield
+    // CFO Yield — no longer a hard gate; shows CCR + CF/Debt sub-lines for quality context
     var cfoY = s.cfo_yield;
     var cfoCls = cfoY == null ? '' :
       cfoY >= 6   ? 'vs-sector-pos' :
       cfoY >= 2   ? '' :
-      cfoY >= 0   ? 'de-ok' : 'vs-sector-neg';
+      cfoY >= 0   ? 'de-ok' :
+      cfoY >= -2  ? '' : 'vs-sector-neg';   // mildly negative = capex phase, not a disqualifier
+
+    // CCR (Cash Conversion Ratio) display
+    var ccr = s.ccr;
+    var ccrStr = '';
+    if (ccr != null) {
+      var ccrCls = ccr >= 0.7 ? 'vs-sector-pos' : ccr >= 0.2 ? 'de-ok' : ccr >= 0 ? '' :
+                  ccr >= -0.5 ? '' : ccr >= -1.0 ? 'de-ok' : 'vs-sector-neg';
+      // Show ✓ / ⚠ icon for quick glance
+      var ccrIcon = ccr >= 0.4 ? '✓' : ccr >= 0 ? '~' : ccr >= -1.0 ? '⚠' : '✕';
+      ccrStr = '<div class="sector-sub ' + ccrCls + '" title="Cash Conversion Ratio: CFO÷Net Profit. &lt;-1.0 = fraud red flag">' +
+               'CCR:' + Number(ccr).toFixed(2) + ' ' + ccrIcon + '</div>';
+    }
+
+    // CF/Debt display
+    var cfDebt = s.cf_to_debt;
+    var cfDebtStr = '';
+    if (cfDebt != null && s.debt_equity > 0.1) {
+      var cfdCls = cfDebt >= 0.3 ? 'vs-sector-pos' : cfDebt >= 0 ? 'de-ok' : cfDebt >= -0.5 ? '' : 'vs-sector-neg';
+      cfDebtStr = '<div class="sector-sub ' + cfdCls + '" title="Cash Flow to Debt Ratio (CFO÷Total Debt)">' +
+                  'CF/Dbt:' + (cfDebt >= 0 ? '+' : '') + Number(cfDebt).toFixed(2) + '</div>';
+    }
+
     var cfoStr = cfoY != null
       ? '<span class="' + cfoCls + '">' + (cfoY >= 0 ? '+' : '') + Number(cfoY).toFixed(1) + '%</span>' +
-        (s.cash_from_operations != null ? '<div class="sector-sub">CFO:&#8377;' + fmtNum(s.cash_from_operations) + 'Cr</div>' : '')
+        (s.cash_from_operations != null ? '<div class="sector-sub">CFO:&#8377;' + fmtNum(s.cash_from_operations) + 'Cr</div>' : '') +
+        ccrStr + cfDebtStr +
+        (peg != null ? '<div class="sector-sub ' + pegCls + '">PEG:' + Number(peg).toFixed(2) + '</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
-    // Sales growth — gate ≥20%; green ≥30%, yellow ≥20%
-    var sg   = s.sales_growth_pct;
-    var sgCls = sg == null ? '' : sg >= 30 ? 'vs-sector-pos' : sg >= 20 ? 'de-ok' : sg >= 0 ? '' : 'vs-sector-neg';
+    // Sales growth — gate ≥25%; green ≥40%, yellow ≥25%; ↑ = TTM accelerating
+    var sg    = s.sales_growth_pct;
+    var ttmSg = s.sales_growth_ttm;
+    var sgCls = sg == null ? '' : sg >= 40 ? 'vs-sector-pos' : sg >= 25 ? 'de-ok' : sg >= 0 ? '' : 'vs-sector-neg';
+    var accelSg = (ttmSg != null && sg != null) ? (Number(ttmSg) - Number(sg)) : null;
     var sgStr = sg != null
       ? '<span class="' + sgCls + '">' + (sg >= 0 ? '+' : '') + Number(sg).toFixed(0) + '%</span>' +
-        (s.sales_growth_ttm != null ? '<div class="sector-sub">TTM:' + (s.sales_growth_ttm >= 0 ? '+' : '') + Number(s.sales_growth_ttm).toFixed(0) + '%</div>' : '') +
-        (s.sales_growth_5y  != null ? '<div class="sector-sub">5Y:'  + (s.sales_growth_5y  >= 0 ? '+' : '') + Number(s.sales_growth_5y ).toFixed(0) + '%</div>' : '')
+        (ttmSg != null
+          ? '<div class="sector-sub ' + (Number(ttmSg) >= Number(sg || 0) ? 'vs-sector-pos' : '') + '">' +
+            'TTM:' + (ttmSg >= 0 ? '+' : '') + Number(ttmSg).toFixed(0) + '%' +
+            (accelSg != null && accelSg > 5 ? ' <span style="color:var(--green)">↑</span>' :
+             accelSg != null && accelSg < -5 ? ' <span style="color:var(--red)">↓</span>' : '') +
+            '</div>'
+          : '') +
+        (s.sales_growth_5y != null ? '<div class="sector-sub">5Y:' + (s.sales_growth_5y >= 0 ? '+' : '') + Number(s.sales_growth_5y).toFixed(0) + '%</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
-    // Profit growth — gate ≥20%; green ≥30%, yellow ≥20%
-    var pg   = s.profit_growth_3y;
-    var pgCls = pg == null ? '' : pg >= 30 ? 'vs-sector-pos' : pg >= 20 ? 'de-ok' : pg >= 0 ? '' : 'vs-sector-neg';
+    // Profit growth — gate ≥25%; green ≥40%, yellow ≥25%; ↑ = TTM accelerating order book
+    var pg    = s.profit_growth_3y;
+    var ttmPg = s.profit_growth_ttm;
+    var pgCls = pg == null ? '' : pg >= 40 ? 'vs-sector-pos' : pg >= 25 ? 'de-ok' : pg >= 0 ? '' : 'vs-sector-neg';
+    var accelPg = (ttmPg != null && pg != null) ? (Number(ttmPg) - Number(pg)) : null;
     var pgStr = pg != null
       ? '<span class="' + pgCls + '">' + (pg >= 0 ? '+' : '') + Number(pg).toFixed(0) + '%</span>' +
-        (s.profit_growth_ttm != null ? '<div class="sector-sub">TTM:' + (s.profit_growth_ttm >= 0 ? '+' : '') + Number(s.profit_growth_ttm).toFixed(0) + '%</div>' : '') +
-        (s.profit_growth_5y  != null ? '<div class="sector-sub">5Y:'  + (s.profit_growth_5y  >= 0 ? '+' : '') + Number(s.profit_growth_5y ).toFixed(0) + '%</div>' : '')
+        (ttmPg != null
+          ? '<div class="sector-sub ' + (Number(ttmPg) >= Number(pg || 0) ? 'vs-sector-pos' : '') + '">' +
+            'TTM:' + (ttmPg >= 0 ? '+' : '') + Number(ttmPg).toFixed(0) + '%' +
+            (accelPg != null && accelPg > 5  ? ' <span style="color:var(--green)">↑</span>' :
+             accelPg != null && accelPg < -5 ? ' <span style="color:var(--red)">↓</span>' : '') +
+            '</div>'
+          : '') +
+        (s.profit_growth_5y != null ? '<div class="sector-sub">5Y:' + (s.profit_growth_5y >= 0 ? '+' : '') + Number(s.profit_growth_5y).toFixed(0) + '%</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
     // Fund score bar + grade
@@ -2400,9 +2451,9 @@ function renderSME(stocks) {
       '<td style="font-size:0.78rem;">' + mcStr + '</td>' +
       '<td>' + deStr + '</td>' +
       '<td>' + roceStr + '</td>' +
+      '<td>' + opmStr + '</td>' +
       '<td>' + phStr + '</td>' +
       '<td>' + instStr + '</td>' +
-      '<td>' + pegStr + '</td>' +
       '<td>' + cfoStr + '</td>' +
       '<td>' + sgStr + '</td>' +
       '<td>' + pgStr + '</td>' +
@@ -2834,8 +2885,9 @@ function renderFundamentals(stocks) {
   if (!stocks || !stocks.length) {
     tbody.innerHTML = '<tr><td colspan="13"><div class="empty-state">' +
       '<i class="bi bi-gem fs-2 d-block mb-2"></i>' +
-      '<strong>Downloading fundamental data for 750 tickers…</strong><br>' +
+      '<strong>Downloading fundamental data…</strong><br>' +
       '<small style="color:var(--text-muted);">Progress bar above shows download status.<br>' +
+      'Only stale/missing tickers are fetched — cached data is reused.<br>' +
       'Table will populate automatically as data arrives — no action needed.</small></div></td></tr>';
     return;
   }
