@@ -1031,6 +1031,16 @@ _fund_data: dict = {}               # {ticker: {sector, debt_equity, ...}, ...}
 _fund_data_lock  = threading.Lock() # protects concurrent writes from parallel BG workers
 _fund_bg_running: bool = False
 
+# ---------------------------------------------------------------------------
+# Result cache for /api/fundamentals
+# Invalidated whenever _fund_cache_save() writes new data to disk.
+# This ensures every page-open within the same batch cycle returns identical
+# results, eliminating the "different results each visit" issue caused by
+# reading _fund_data while the background worker is mid-refresh.
+# ---------------------------------------------------------------------------
+_fund_result_cache_body:  "dict | None" = None   # last computed response body
+_fund_result_cache_valid: bool          = False   # False = must recompute on next request
+
 
 def _fund_cache_load() -> None:
     """Load fundamentals disk cache into memory (called once at startup).
@@ -1066,6 +1076,8 @@ def _fund_cache_load() -> None:
 
 def _fund_cache_save() -> None:
     """Persist in-memory fundamentals cache to disk."""
+    global _fund_result_cache_valid
+    _fund_result_cache_valid = False   # new data → force result recompute on next request
     try:
         _FUND_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         _FUND_CACHE_FILE.write_text(
@@ -1203,7 +1215,7 @@ def _fund_bg_worker(tickers: list) -> None:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     global _fund_bg_running
-    MAX_WORKERS  = 5   # 5 parallel screener.in requests stays within polite limits
+    MAX_WORKERS  = 12  # 12 parallel screener.in requests (raised from 10)
     BATCH_SIZE   = 50  # save checkpoint every N tickers
     total_refreshed = 0
     total_changed   = 0
@@ -1603,10 +1615,10 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
     Uses a disk cache (cache/fundamentals_data.json) that persists across restarts.
     Pass ?refresh=1 to force an immediate background refresh.
     """
-    global _fund_bg_running
+    global _fund_bg_running, _fund_result_cache_body, _fund_result_cache_valid
 
     # Fundamentals tab covers Nifty500 + Microcap250 (combined de-duped universe).
-    # Performance is maintained via 5-worker parallel downloads + known-fail skip TTL
+    # Performance is maintained via 10-worker parallel downloads + known-fail skip TTL
     # so the extra 250 MC tickers no longer cause a 1-hour scan.
     all_tickers: list = list(dict.fromkeys(NIFTY500_TICKERS + NIFTY_MICROCAP250_TICKERS))
     now = time.time()
@@ -1621,6 +1633,7 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
                 age = now - _fund_data[t].get("_ts", 0)
                 if age > _FUND_FORCE_REFRESH_TTL:
                     _fund_data[t]["_ts"] = 0.0
+        _fund_result_cache_valid = False   # force fresh result on manual refresh
 
     # Map scan results by ticker (provides tech score, fresh D/E, market_cap)
     scan_map: dict = {}
@@ -1628,6 +1641,51 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
         key = (s.get("ticker") or s.get("display_ticker", "")).upper()
         if key:
             scan_map[key] = s
+
+    # Count stale entries and trigger background refresh if not already running.
+    # Use per-ticker TTL: known-fail tickers use the longer FAIL TTL.
+    stale = [
+        t for t in all_tickers
+        if now - _fund_data.get(t, {}).get("_ts", 0)
+           > (_FUND_FAIL_TTL if _fund_data.get(t, {}).get("_gf") else _FUND_CACHE_TTL)
+    ]
+    if stale and not _fund_bg_running:
+        _fund_bg_running = True
+        _fund_cancel.clear()   # allow this worker to run (user is on fund tab)
+        # Prioritise: passing-gate tickers > scan-active tickers > known-fail tickers
+        priority_first = sorted(
+            stale,
+            key=lambda t: (
+                1 if _fund_data.get(t, {}).get("_gf") else 0,  # known-fail last
+                0 if t.upper() in scan_map else 1,              # in-scan-map first
+            ),
+        )
+
+        async def _bg_task(tickers=priority_first):
+            global _fund_bg_running
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _fund_bg_worker, tickers)
+            except Exception:
+                _fund_bg_running = False
+        asyncio.create_task(_bg_task())
+
+    cache_fresh = len(all_tickers) - len(stale)
+
+    # ------------------------------------------------------------------
+    # Return stable cached results when available (cache is invalidated by
+    # _fund_cache_save() each time a new batch of data is written to disk).
+    # This guarantees consistent results on every page-open within the same
+    # refresh cycle, eliminating the "different results each visit" issue.
+    # Dynamic status fields (bg_running, stale_count, cache_fresh) are
+    # always refreshed so the UI accurately reflects background progress.
+    # ------------------------------------------------------------------
+    if not refresh and _fund_result_cache_valid and _fund_result_cache_body is not None:
+        live_body = dict(_fund_result_cache_body)
+        live_body["bg_running"]   = _fund_bg_running
+        live_body["stale_count"]  = len(stale)
+        live_body["cache_fresh"]  = cache_fresh
+        return JSONResponse(live_body)
 
     # Build combined record for every ticker that has at least some cached data
     combined = []
@@ -1688,36 +1746,7 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
     logger.info("Fundamentals: %d total records, %d passed quality gates + score≥%.0f, showing top %d",
                 len(combined), len(qualified), _FUND_MIN_SCORE, len(top30))
 
-    # Count stale entries and trigger background refresh if not already running.
-    # Use per-ticker TTL: known-fail tickers use the longer FAIL TTL.
-    stale = [
-        t for t in all_tickers
-        if now - _fund_data.get(t, {}).get("_ts", 0)
-           > (_FUND_FAIL_TTL if _fund_data.get(t, {}).get("_gf") else _FUND_CACHE_TTL)
-    ]
-    if stale and not _fund_bg_running:
-        _fund_bg_running = True
-        _fund_cancel.clear()   # allow this worker to run (user is on fund tab)
-        # Prioritise: passing-gate tickers > scan-active tickers > known-fail tickers
-        priority_first = sorted(
-            stale,
-            key=lambda t: (
-                1 if _fund_data.get(t, {}).get("_gf") else 0,  # known-fail last
-                0 if t.upper() in scan_map else 1,              # in-scan-map first
-            ),
-        )
-
-        async def _bg_task(tickers=priority_first):
-            global _fund_bg_running
-            try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, _fund_bg_worker, tickers)
-            except Exception:
-                _fund_bg_running = False
-        asyncio.create_task(_bg_task())
-
-    cache_fresh = len(all_tickers) - len(stale)
-    return JSONResponse({
+    response_body = {
         "stocks":             top30,
         "all_stocks":         qualified,
         "total":              len(qualified),
@@ -1738,7 +1767,11 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
             "cfo_positive":     _FUND_CFO_POSITIVE,
             "min_score":        _FUND_MIN_SCORE,
         },
-    })
+    }
+    # Store result in cache so identical results are returned until next data batch
+    _fund_result_cache_body  = response_body
+    _fund_result_cache_valid = True
+    return JSONResponse(response_body)
 
 
 # -- SME Fundamentals ---------------------------------------------------------
@@ -1752,6 +1785,10 @@ _sme_fund_data: dict   = {}           # {ticker: {exchange, fund_score, ...}}
 _sme_fund_lock         = threading.Lock()  # protects concurrent writes
 _sme_bg_running: bool  = False
 _sme_universe: dict    = {}           # {ticker: "NSE Emerge" | "BSE SME"}  -  built at startup
+
+# Result cache for /api/sme/fundamentals (same invalidation pattern as _fund_result_cache)
+_sme_result_cache_body:  "dict | None" = None
+_sme_result_cache_valid: bool          = False
 
 # SME high-growth gate thresholds (stricter on growth, relaxed on debt vs Nifty500)
 _SME_ROCE_MIN         = 15.0   # %  — capital efficiency gate
@@ -1797,6 +1834,8 @@ def _sme_cache_load() -> None:
 
 
 def _sme_cache_save() -> None:
+    global _sme_result_cache_valid
+    _sme_result_cache_valid = False   # new data → force result recompute on next request
     try:
         _SME_FUND_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         _SME_FUND_CACHE_FILE.write_text(
@@ -2322,8 +2361,8 @@ def _sme_bg_worker(tickers: list) -> None:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     global _sme_bg_running
-    MAX_WORKERS = 4   # SME tickers are fewer; slightly fewer workers to stay polite
-    BATCH_SIZE  = 40
+    MAX_WORKERS = 12  # 12 parallel workers (raised from 10)
+    BATCH_SIZE  = 50  # raised from 40 to match main fund worker
     total_refreshed = 0
     total_changed   = 0
     total_skipped   = 0
@@ -2701,10 +2740,10 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
     Top SME stocks ranked by high-growth fundamental quality.
     Universe: NSE Emerge + BSE SME IPO tickers.
     Uses a SEPARATE cache file (cache/sme_fundamentals_data.json).
-    Gates: ROCE≥15%, ROE≥15%, D/E≤1.5, ProfitGrowth3Y≥20%, SalesGrowth≥20%, CFO>0.
+    Gates: ROCE≥15%, ROE≥15%, D/E≤1.5, ProfitGrowth3Y≥25%, SalesGrowth≥25%, CFO>0.
     Each result includes an 'exchange' field: 'NSE Emerge' or 'BSE SME'.
     """
-    global _sme_bg_running, _sme_universe
+    global _sme_bg_running, _sme_universe, _sme_result_cache_body, _sme_result_cache_valid
 
     # Build universe on first call (cached in module-level dict after that)
     if not _sme_universe:
@@ -2719,6 +2758,41 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
         for t in all_tickers:
             if t in _sme_fund_data:
                 _sme_fund_data[t]["_ts"] = 0.0
+        _sme_result_cache_valid = False   # force fresh result on manual refresh
+
+    # Count stale entries and trigger background refresh if not already running.
+    stale = [
+        t for t in all_tickers
+        if now - _sme_fund_data.get(t, {}).get("_ts", 0)
+           > (_SME_FAIL_TTL if _sme_fund_data.get(t, {}).get("_gf") else _SME_FUND_CACHE_TTL)
+    ]
+    if stale and not _sme_bg_running:
+        _sme_bg_running = True
+        _sme_cancel.clear()   # allow this worker to run (user is on sme tab)
+
+        async def _sme_bg_task(tickers=stale):
+            global _sme_bg_running
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _sme_bg_worker, tickers)
+            except Exception:
+                _sme_bg_running = False
+        asyncio.create_task(_sme_bg_task())
+
+    cache_fresh = len(all_tickers) - len(stale)
+    nse_count = sum(1 for v in _sme_universe.values() if v == "NSE Emerge")
+    bse_count = sum(1 for v in _sme_universe.values() if v == "BSE SME")
+
+    # ------------------------------------------------------------------
+    # Return stable cached result (invalidated by _sme_cache_save() each
+    # time a new batch of data is written to disk).
+    # ------------------------------------------------------------------
+    if not refresh and _sme_result_cache_valid and _sme_result_cache_body is not None:
+        live_body = dict(_sme_result_cache_body)
+        live_body["bg_running"]  = _sme_bg_running
+        live_body["stale_count"] = len(stale)
+        live_body["cache_fresh"] = cache_fresh
+        return JSONResponse(live_body)
 
     combined = []
     for ticker in all_tickers:
@@ -2764,31 +2838,7 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
     for i, s in enumerate(top30, 1):
         s["sme_rank"] = i
 
-    # Kick background refresh for stale SME tickers (SME-specific cache)
-    # Use per-ticker TTL: known-fail tickers use the longer SME_FAIL_TTL.
-    stale = [
-        t for t in all_tickers
-        if now - _sme_fund_data.get(t, {}).get("_ts", 0)
-           > (_SME_FAIL_TTL if _sme_fund_data.get(t, {}).get("_gf") else _SME_FUND_CACHE_TTL)
-    ]
-    if stale and not _sme_bg_running:
-        _sme_bg_running = True
-        _sme_cancel.clear()   # allow this worker to run (user is on sme tab)
-
-        async def _sme_bg_task(tickers=stale):
-            global _sme_bg_running
-            try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, _sme_bg_worker, tickers)
-            except Exception:
-                _sme_bg_running = False
-        asyncio.create_task(_sme_bg_task())
-
-    cache_fresh = len(all_tickers) - len(stale)
-    nse_count = sum(1 for v in _sme_universe.values() if v == "NSE Emerge")
-    bse_count = sum(1 for v in _sme_universe.values() if v == "BSE SME")
-
-    return JSONResponse({
+    response_body = {
         "stocks":       top30,
         "all_stocks":   combined,
         "total":        len(combined),
@@ -2811,7 +2861,11 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
             "cf_debt_min":      _SME_CF_DEBT_MIN,
             "cfo_deep_neg_cr":  _SME_CFO_DEEP_NEG,
         },
-    })
+    }
+    # Store in cache so identical results are returned until next data batch
+    _sme_result_cache_body  = response_body
+    _sme_result_cache_valid = True
+    return JSONResponse(response_body)
 
 
 

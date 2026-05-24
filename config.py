@@ -179,7 +179,7 @@ AUTO_RESCAN           = False
 # --------------------------------------------------------------------------- #
 DOWNLOAD_THREADS     = 20
 DOWNLOAD_BATCH_SIZE  = 100
-FUNDAMENTALS_THREADS = 5
+FUNDAMENTALS_THREADS = 12
 FUNDAMENTALS_DELAY   = 0.0
 DOWNLOAD_THROTTLE    = 0
 CRUMB_TTL            = 3500

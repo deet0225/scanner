@@ -23,15 +23,16 @@ Market Cap:
   4. yfinance quoteSummary
 
 D/E Ratio:
-  1. Screener.in  HTML scrape   (quarterly filing data)
-  2. Apify screener actor       (if APIFY_API_KEY is set)
-  3. Alpha Vantage overview     (if ALPHA_VANTAGE_API_KEY is set)
-  4. yfinance quoteSummary
+  1. Yahoo Finance   quoteSummary/financialData  (debtToEquity)
+  2. Screener.in  HTML scrape   (quarterly filing data — fallback)
+  3. Apify screener actor       (if APIFY_API_KEY is set)
+  4. Alpha Vantage overview     (if ALPHA_VANTAGE_API_KEY is set)
 
 Sector:
-  1. NSE live API  industryInfo
-  2. Alpha Vantage overview
-  3. yfinance quoteSummary
+  1. Yahoo Finance   quoteSummary/assetProfile  (sector)
+  2. NSE live API  industryInfo
+  3. Alpha Vantage overview
+  4. Screener.in fallback
 """
 
 from __future__ import annotations
@@ -66,6 +67,18 @@ _SESSION.headers.update({
     "Accept":          "application/json, text/html, */*",
     "Accept-Language": "en-US,en;q=0.9",
     "Referer":         "https://www.nseindia.com/",
+})
+
+# Separate session for Yahoo Finance (no NSE referer — Yahoo rejects it)
+_YF_SESSION = requests.Session()
+_YF_SESSION.verify = False
+_YF_SESSION.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
 })
 
 # Warm NSE cookies once at module load (non-fatal if it fails)
@@ -1051,6 +1064,131 @@ class NSEPythonHistClient:
 
 
 # ---------------------------------------------------------------------------
+# 7a. Yahoo Finance Fundamentals Client  (sector + D/E + market cap via crumb API)
+# ---------------------------------------------------------------------------
+
+class YahooFundamentalsClient:
+    """
+    Fetches sector, debt-to-equity (×100 format) and market cap from
+    Yahoo Finance's v10 quoteSummary API using crumb-based auth.
+
+    Used as the FIRST source in FundamentalsClient.get(); Screener.in is the
+    fallback when Yahoo is blocked / rate-limited / returns no data.
+
+    Cache TTL: 4 hours so repeated calls within a scan cycle are instant.
+    """
+
+    _SUMMARY_URL = "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{t}"
+    _HOME_URL    = "https://finance.yahoo.com/"
+    _CRUMB_TTL   = 3600          # re-fetch crumb every hour
+
+    _cache:    dict  = {}
+    _cache_ts: dict  = {}
+    _TTL      = 3600 * 4         # 4-hour in-memory cache
+
+    # Class-level crumb state (shared across all instances / threads)
+    _crumb:      "str | None" = None
+    _crumb_ts:   float        = 0.0
+    _crumb_lock: threading.Lock = threading.Lock()
+
+    # ── crumb management ───────────────────────────────────────────────────
+
+    def _init_crumb(self) -> None:
+        """Obtain / refresh the Yahoo Finance crumb (thread-safe)."""
+        with self._crumb_lock:
+            if self._crumb and time.time() - self._crumb_ts < self._CRUMB_TTL:
+                return
+            try:
+                r = _YF_SESSION.get(self._HOME_URL, timeout=20)
+                r.raise_for_status()
+                hits = re.compile(r'"crumb":"([^"]+)"').findall(r.text)
+                if not hits:
+                    raise RuntimeError("crumb not found in Yahoo Finance HTML")
+                self.__class__._crumb    = hits[0]
+                self.__class__._crumb_ts = time.time()
+                logger.debug("YahooFundamentalsClient: crumb refreshed")
+            except Exception as exc:
+                logger.debug("YahooFundamentalsClient._init_crumb: %s", exc)
+                raise
+
+    # ── public API ─────────────────────────────────────────────────────────
+
+    def get(self, nse_symbol: str) -> "dict | None":
+        """
+        Returns dict (any key may be absent if unavailable):
+          sector          : str
+          debt_equity_x100: float  — Yahoo ×100 format (250 = D/E 2.5)
+          market_cap_inr  : float  — absolute INR
+        Returns None on error / no data.
+        """
+        sym = nse_symbol.upper().replace(".NS", "").replace(".BO", "")
+        now = time.time()
+
+        if sym in self._cache and (now - self._cache_ts.get(sym, 0)) < self._TTL:
+            return self._cache[sym]
+
+        # Try NSE ticker (.NS) first; BO ticker as fallback
+        for ticker in (sym + ".NS", sym + ".BO"):
+            try:
+                self._init_crumb()
+                r = _YF_SESSION.get(
+                    self._SUMMARY_URL.format(t=ticker),
+                    params={"modules": "summaryDetail,assetProfile,financialData",
+                            "crumb":   self._crumb},
+                    timeout=15,
+                )
+                if r.status_code != 200:
+                    continue
+
+                res = r.json().get("quoteSummary", {}).get("result")
+                if not res:
+                    continue
+
+                sd = res[0].get("summaryDetail",  {}) or {}
+                ap = res[0].get("assetProfile",   {}) or {}
+                fd = res[0].get("financialData",  {}) or {}
+
+                def _raw(d: dict, key: str):
+                    v = d.get(key, {})
+                    return v.get("raw") if isinstance(v, dict) else v
+
+                result: dict = {}
+
+                sector = ap.get("sector", "")
+                if sector and sector not in ("None", "-", "", "N/A"):
+                    result["sector"] = sector
+
+                de = _raw(fd, "debtToEquity")   # already in ×100 format
+                if de is not None:
+                    try:
+                        result["debt_equity_x100"] = float(de)
+                    except Exception:
+                        pass
+
+                mc = _raw(sd, "marketCap")
+                if mc is not None:
+                    try:
+                        result["market_cap_inr"] = float(mc)
+                    except Exception:
+                        pass
+
+                if result:
+                    self._cache[sym]    = result
+                    self._cache_ts[sym] = now
+                    logger.debug("YahooFundamentals(%s): sector=%s de=%s mc=%s",
+                                 sym,
+                                 result.get("sector"),
+                                 result.get("debt_equity_x100"),
+                                 result.get("market_cap_inr"))
+                    return result
+
+            except Exception as exc:
+                logger.debug("YahooFundamentalsClient.get(%s) [%s]: %s", sym, ticker, exc)
+
+        return None
+
+
+# ---------------------------------------------------------------------------
 # 7. Unified Fundamentals Fetcher  (full multi-source priority chain)
 # ---------------------------------------------------------------------------
 
@@ -1058,18 +1196,19 @@ class FundamentalsClient:
     """
     Returns fundamentals for a stock.
 
-    Active sources (both confirmed working):
-      market_cap + sector : NSE live API  (issuedSize × lastPrice)
-      debt_equity, ROCE,    Screener.in  (HTML scrape — direct, no API key needed)
-      ROE, promoter %,
-      sales growth, etc.
+    Priority chain for sector / D/E / market cap:
+      1. Yahoo Finance  (YahooFundamentalsClient — crumb API; fastest)
+      2. NSE live API   (market cap is most accurate here: issuedSize × lastPrice;
+                         also provides Indian sector taxonomy)
+      3. Screener.in    (fallback for D/E when Yahoo fails; also fills market cap
+                         and sector if both Yahoo and NSE returned nothing)
 
-    Removed: Apify, Alpha Vantage, Yahoo Finance (all require keys or are
-    blocked by corporate SSL proxy).
+    get_extra_fundamentals() (ROCE/ROE/promoter/growth) is sourced from Screener.in.
     """
 
     def __init__(self, **kwargs):
         # Accept (and ignore) legacy alpha_key / apify_key keyword args
+        self._yahoo    = YahooFundamentalsClient()
         self._nse      = NSEQuoteClient()
         self._screener = ScreenerClient()
 
@@ -1077,38 +1216,61 @@ class FundamentalsClient:
         self,
         ticker: str,
         yf_fundamentals_fn=None,   # kept for backward compat — not called
-    ) -> tuple[str | None, float | None, float | None]:
+    ) -> "tuple[str | None, float | None, float | None]":
         """
         Returns (sector, debt_equity_x100, market_cap_inr).
 
         debt_equity_x100 : ratio × 100  (legacy Yahoo format — 250 = D/E 2.5)
         market_cap_inr   : absolute INR (e.g. 12e9 = Rs.1200 Cr)
+
+        Source priority:
+          Yahoo → sector, D/E, market_cap  (primary)
+          NSE   → market_cap override (most accurate); sector if Yahoo had none
+          Screener → D/E fallback; market_cap/sector if both others failed
         """
         sym = ticker.upper().replace(".NS", "").replace(".BO", "")
 
-        # ── 1. NSE live API (market cap + sector) ───────────────────────────
-        nse_data   = None
+        sector:      "str | None"   = None
+        debt_equity: "float | None" = None   # ×100 format
+        market_cap:  "float | None" = None
+
+        # ── 1. Yahoo Finance (primary) ──────────────────────────────────────
+        try:
+            yf_data = self._yahoo.get(sym)
+            if yf_data:
+                sector      = yf_data.get("sector")
+                debt_equity = yf_data.get("debt_equity_x100")
+                market_cap  = yf_data.get("market_cap_inr")
+        except Exception:
+            pass
+
+        # ── 2. NSE live API ─────────────────────────────────────────────────
+        # Always call NSE: its market cap (issuedSize × lastPrice) is the most
+        # accurate available.  Also fills sector if Yahoo returned nothing.
         try:
             nse_data = self._nse.get(sym)
+            if nse_data:
+                nse_mc = nse_data.get("market_cap_inr")
+                if nse_mc:                          # prefer NSE market cap
+                    market_cap = nse_mc
+                if sector is None:
+                    sector = nse_data.get("sector") or None
         except Exception:
             pass
 
-        market_cap = nse_data.get("market_cap_inr") if nse_data else None
-        sector     = nse_data.get("sector")          if nse_data else None
-
-        # ── 2. Screener.in (ROCE/ROE/promoter/sales growth + D/E if shown) ──
-        debt_equity = None
-        try:
-            sc = self._screener.get(sym)
-            if sc:
-                if "debt_equity" in sc:
-                    debt_equity = sc["debt_equity"] * 100   # → ×100 format
-                if market_cap is None and "market_cap_cr" in sc:
-                    market_cap = sc["market_cap_cr"] * 1e7
-                if sector is None and "sector" in sc:
-                    sector = sc["sector"]
-        except Exception:
-            pass
+        # ── 3. Screener.in (fallback for D/E + remaining gaps) ──────────────
+        if debt_equity is None or market_cap is None or sector is None:
+            try:
+                sc = self._screener.get(sym)
+                if sc:
+                    if debt_equity is None and "debt_equity" in sc:
+                        debt_equity = sc["debt_equity"] * 100   # → ×100 format
+                    if market_cap is None and "market_cap_cr" in sc:
+                        market_cap = sc["market_cap_cr"] * 1e7
+                    if sector is None and "sector" in sc:
+                        sector = sc["sector"]
+            except Exception:
+                pass
 
         return sector, debt_equity, market_cap
 
