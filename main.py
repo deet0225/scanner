@@ -655,6 +655,58 @@ async def cache_clear() -> JSONResponse:
     return JSONResponse({"deleted": n, "message": f"{n} cache files removed"})
 
 
+@app.post("/api/fundamentals/clear-cache")
+async def fundamentals_cache_clear() -> JSONResponse:
+    """Force a full re-download of all fundamentals data on the next request.
+
+    Resets every ticker's _ts timestamp to 0 so the background worker treats
+    ALL entries as stale and re-fetches from Screener.in from scratch.
+    Invalidates the in-memory result cache so the next GET /api/fundamentals
+    rebuilds the response from freshly-downloaded data.
+
+    Useful when results differ between local and Render (e.g. stale disk cache).
+    """
+    global _fund_result_cache_valid, _fund_result_cache_body
+    reset_count = 0
+    with _fund_data_lock:
+        for entry in _fund_data.values():
+            if isinstance(entry, dict):
+                entry["_ts"] = 0.0
+                entry.pop("_gf", None)   # allow known-fail tickers to be re-checked
+                reset_count += 1
+    _fund_result_cache_valid = False
+    _fund_result_cache_body  = None
+    logger.info("Fundamentals cache force-reset: %d entries invalidated", reset_count)
+    return JSONResponse({
+        "reset":   reset_count,
+        "message": f"{reset_count} fundamentals entries invalidated — full re-download will start on next tab visit",
+    })
+
+
+@app.post("/api/sme/fundamentals/clear-cache")
+async def sme_fundamentals_cache_clear() -> JSONResponse:
+    """Force a full re-download of all SME fundamentals data on the next request.
+
+    Same semantics as /api/fundamentals/clear-cache but for the SME universe
+    (NSE Emerge + BSE SME stocks).
+    """
+    global _sme_result_cache_valid, _sme_result_cache_body
+    reset_count = 0
+    with _sme_fund_lock:
+        for entry in _sme_fund_data.values():
+            if isinstance(entry, dict):
+                entry["_ts"] = 0.0
+                entry.pop("_gf", None)
+                reset_count += 1
+    _sme_result_cache_valid = False
+    _sme_result_cache_body  = None
+    logger.info("SME fundamentals cache force-reset: %d entries invalidated", reset_count)
+    return JSONResponse({
+        "reset":   reset_count,
+        "message": f"{reset_count} SME fundamentals entries invalidated — full re-download will start on next tab visit",
+    })
+
+
 @app.get("/api/results")
 async def get_results() -> JSONResponse:
     return JSONResponse(scan_state)

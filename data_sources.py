@@ -23,16 +23,10 @@ Market Cap:
   4. yfinance quoteSummary
 
 D/E Ratio:
-  1. Yahoo Finance   quoteSummary/financialData  (debtToEquity)
-  2. Screener.in  HTML scrape   (quarterly filing data — fallback)
-  3. Apify screener actor       (if APIFY_API_KEY is set)
-  4. Alpha Vantage overview     (if ALPHA_VANTAGE_API_KEY is set)
+  1. Screener.in  HTML scrape  (quarterly filing data — sole source)
 
 Sector:
-  1. Yahoo Finance   quoteSummary/assetProfile  (sector)
-  2. NSE live API  industryInfo
-  3. Alpha Vantage overview
-  4. Screener.in fallback
+  1. Screener.in  HTML scrape  (sole source)
 """
 
 from __future__ import annotations
@@ -1194,92 +1188,52 @@ class YahooFundamentalsClient:
 
 class FundamentalsClient:
     """
-    Returns fundamentals for a stock.
+    Returns fundamentals for a stock using Screener.in as the sole data source.
 
-    Priority chain for sector / D/E / market cap:
-      1. Yahoo Finance  (YahooFundamentalsClient — crumb API; fastest)
-      2. NSE live API   (market cap is most accurate here: issuedSize × lastPrice;
-                         also provides Indian sector taxonomy)
-      3. Screener.in    (fallback for D/E when Yahoo fails; also fills market cap
-                         and sector if both Yahoo and NSE returned nothing)
-
-    get_extra_fundamentals() (ROCE/ROE/promoter/growth) is sourced from Screener.in.
+    All fields — sector, D/E, market cap, ROCE, ROE, promoter holding,
+    sales/profit growth, PE, cash flow, etc. — are scraped from Screener.in.
+    This ensures consistent results regardless of deployment environment
+    (no dependency on Yahoo Finance crumbs or NSE live API availability).
     """
 
     def __init__(self, **kwargs):
-        # Accept (and ignore) legacy alpha_key / apify_key keyword args
-        self._yahoo    = YahooFundamentalsClient()
-        self._nse      = NSEQuoteClient()
+        # Accept (and ignore) legacy alpha_key / apify_key / nse keyword args
         self._screener = ScreenerClient()
 
     def get(
         self,
         ticker: str,
-        yf_fundamentals_fn=None,   # kept for backward compat — not called
+        yf_fundamentals_fn=None,   # kept for backward compat — not used
     ) -> "tuple[str | None, float | None, float | None]":
         """
-        Returns (sector, debt_equity_x100, market_cap_inr).
+        Returns (sector, debt_equity_x100, market_cap_inr) from Screener.in.
 
-        debt_equity_x100 : ratio × 100  (legacy Yahoo format — 250 = D/E 2.5)
-        market_cap_inr   : absolute INR (e.g. 12e9 = Rs.1200 Cr)
-
-        Source priority:
-          Yahoo → sector, D/E, market_cap  (primary)
-          NSE   → market_cap override (most accurate); sector if Yahoo had none
-          Screener → D/E fallback; market_cap/sector if both others failed
+        debt_equity_x100 : ratio × 100  (legacy format — 250 = D/E 2.5)
+        market_cap_inr   : absolute INR (market_cap_cr × 1e7)
+        Any value may be None if Screener.in did not return it.
         """
         sym = ticker.upper().replace(".NS", "").replace(".BO", "")
 
         sector:      "str | None"   = None
-        debt_equity: "float | None" = None   # ×100 format
+        debt_equity: "float | None" = None
         market_cap:  "float | None" = None
 
-        # ── 1. Yahoo Finance (primary) ──────────────────────────────────────
         try:
-            yf_data = self._yahoo.get(sym)
-            if yf_data:
-                sector      = yf_data.get("sector")
-                debt_equity = yf_data.get("debt_equity_x100")
-                market_cap  = yf_data.get("market_cap_inr")
+            sc = self._screener.get(sym)
+            if sc:
+                sector = sc.get("sector") or None
+                if "debt_equity" in sc and sc["debt_equity"] is not None:
+                    debt_equity = sc["debt_equity"] * 100   # → ×100 format
+                if "market_cap_cr" in sc and sc["market_cap_cr"] is not None:
+                    market_cap = sc["market_cap_cr"] * 1e7
         except Exception:
             pass
-
-        # ── 2. NSE live API ─────────────────────────────────────────────────
-        # Always call NSE: its market cap (issuedSize × lastPrice) is the most
-        # accurate available.  Also fills sector if Yahoo returned nothing.
-        try:
-            nse_data = self._nse.get(sym)
-            if nse_data:
-                nse_mc = nse_data.get("market_cap_inr")
-                if nse_mc:                          # prefer NSE market cap
-                    market_cap = nse_mc
-                if sector is None:
-                    sector = nse_data.get("sector") or None
-        except Exception:
-            pass
-
-        # ── 3. Screener.in (fallback for D/E + remaining gaps) ──────────────
-        if debt_equity is None or market_cap is None or sector is None:
-            try:
-                sc = self._screener.get(sym)
-                if sc:
-                    if debt_equity is None and "debt_equity" in sc:
-                        debt_equity = sc["debt_equity"] * 100   # → ×100 format
-                    if market_cap is None and "market_cap_cr" in sc:
-                        market_cap = sc["market_cap_cr"] * 1e7
-                    if sector is None and "sector" in sc:
-                        sector = sc["sector"]
-            except Exception:
-                pass
 
         return sector, debt_equity, market_cap
 
     def get_live_candle(self, nse_symbol: str) -> dict | None:
-        """Returns today's live OHLCV candle from NSE live API."""
-        try:
-            return self._nse.get(nse_symbol)
-        except Exception:
-            return None
+        """Live candle not available from Screener.in — returns None."""
+        return None
 
     def get_extra_fundamentals(self, nse_symbol: str) -> dict:
         """

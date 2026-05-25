@@ -236,6 +236,35 @@
     .rescan-btn.scanning .spin { display: inline-block; animation: spin 0.8s linear infinite; }
     .rescan-btn.scanning .icon { display: none; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    /* ── Force Live Refresh button ── */
+    .force-refresh-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: var(--stat-pill-bg); border: 1px solid #9a4800;
+      border-radius: 8px; color: var(--orange);
+      padding: 5px 12px; font-size: 0.78rem; font-weight: 600;
+      cursor: pointer; transition: background 0.15s, opacity 0.15s;
+      white-space: nowrap;
+    }
+    .force-refresh-btn:hover { background: #2a1800; border-color: var(--orange); }
+    .force-refresh-btn .spin { display: none; }
+    .force-refresh-btn.working .spin { display: inline-block; animation: spin 0.8s linear infinite; }
+    .force-refresh-btn.working .icon { display: none; }
+    .force-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    [data-theme="light"] .force-refresh-btn:hover { background: #fff3e0; border-color: var(--orange); }
+    /* ── Force refresh toast ── */
+    #force-refresh-toast {
+      position: fixed; bottom: 28px; right: 28px; z-index: 9999;
+      background: #1a2035; border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 18px;
+      font-size: 0.83rem; color: var(--text-primary);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      display: flex; align-items: center; gap: 10px;
+      opacity: 0; transform: translateY(16px);
+      transition: opacity 0.3s, transform 0.3s;
+      pointer-events: none; max-width: 360px;
+    }
+    #force-refresh-toast.show { opacity: 1; transform: translateY(0); }
+    #force-refresh-toast .toast-icon { font-size: 1.1rem; flex-shrink: 0; }
     /* ── Stock Search ── */
     .search-wrap {
       padding: 20px; display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;
@@ -385,6 +414,12 @@
       <span id="status-text" style="font-size:0.82rem;">Initializing...</span>
     </span>
     <span id="last-updated" style="font-size:0.78rem;" class="topbar-muted">--</span>
+    <button class="force-refresh-btn" id="force-refresh-btn" onclick="forceRefreshLive()"
+            title="Clear local OHLCV cache and force-download fresh live data from NSE/BSE — use when results differ from Render">
+      <i class="bi bi-cloud-download icon"></i>
+      <i class="bi bi-arrow-clockwise spin"></i>
+      Force Live Data
+    </button>
     <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle light/dark theme">
       <span id="theme-icon">☀️</span>
       <span id="theme-label">Light</span>
@@ -1742,15 +1777,15 @@ function renderMomentum(stocks, meta) {
     var slVal   = s.stop_loss != null ? s.stop_loss : null;
     var slCell  = '--';
     if (slVal != null && price != null) {
-      var slRisk   = price > 0 ? ((slVal - price) / price * 100) : 0;
+      var slRisk   = price > 0 ? ((price - slVal) / price * 100) : 0;  // positive = % below entry
       var slRiskStr = slRisk.toFixed(2);
       var slCol    = 'var(--red)';
       slCell =
         '<span style="color:' + slCol + ';font-weight:700;font-family:monospace;font-size:0.88rem;" ' +
-        'title="Stop Loss: ₹' + Number(slVal).toLocaleString('en-IN') + '\nRisk from entry: ' + slRiskStr + '%\nPlace SL just below this structural support level.">' +
+        'title="Stop Loss: ₹' + Number(slVal).toLocaleString('en-IN') + '\nRisk from entry: \u2212' + slRiskStr + '%\nPlace SL just below this structural support level.">' +
         '&#8377;' + Number(slVal).toLocaleString('en-IN') +
         '</span>' +
-        '<div class="sector-sub" style="color:var(--red);font-size:0.68rem;">' + slRiskStr + '% risk</div>';
+        '<div class="sector-sub" style="color:var(--red);font-size:0.68rem;">&minus;' + slRiskStr + '% risk</div>';
     } else if (slVal != null) {
       slCell = '<span style="color:var(--red);font-family:monospace;">&#8377;' + Number(slVal).toLocaleString('en-IN') + '</span>';
     }
@@ -1922,12 +1957,14 @@ function renderMomentum(stocks, meta) {
         candleDateCell +
       '</td>' +
       '<td>' + priceStr + '</td>' +
+      '<td>' + slCell   + '</td>' +
       '<td>' + rsiCell  + '</td>' +
       '<td>' + adxCell  + '</td>' +
       '<td>' + r20Cell  + '</td>' +
       '<td>' + rsCell   + '</td>' +
       '<td>' + volCell  + '</td>' +
       '<td>' + emaCell  + '</td>' +
+      '<td>' + macdCell + '</td>' +
       '<td>' + secCell  + '</td>' +
       '<td>' + msCell   + '</td>' +
       '</tr>';
@@ -3024,6 +3061,80 @@ function fmtNum(v) {
 
 // ── Startup ── connect both N500 + MC250 streams right away
 swingConnect();
+
+// ── Force Live Data Refresh (clear ALL caches + rescan all tabs) ────────────
+function forceRefreshLive() {
+  var btn = document.getElementById('force-refresh-btn');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.classList.add('working');
+  _showForceToast('⏳', 'Clearing all local caches on server…');
+
+  // Step 1: clear OHLCV cache (pkl files used by price-based scans)
+  var p1 = fetch('/api/cache/clear', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
+  // Step 2: invalidate fundamentals cache (screener.in data, JSON)
+  var p2 = fetch('/api/fundamentals/clear-cache', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
+  // Step 3: invalidate SME fundamentals cache (screener.in data, JSON)
+  var p3 = fetch('/api/sme/fundamentals/clear-cache', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
+
+  Promise.all([p1, p2, p3]).then(function(results) {
+    var ohlcvDeleted = results[0].deleted || 0;
+    var fundReset    = results[1].reset   || 0;
+    var smeReset     = results[2].reset   || 0;
+    _showForceToast('✅',
+      'Cleared: ' + ohlcvDeleted + ' OHLCV files, ' +
+      fundReset + ' fundamentals, ' + smeReset + ' SME entries. Re-downloading…');
+
+    // Trigger fresh scans for all scan types (price/technical tabs)
+    fetch('/api/rescan',                  {method: 'POST'}).catch(function(){});
+    fetch('/api/microcap/rescan',         {method: 'POST'}).catch(function(){});
+    fetch('/api/stock-momentum/rescan',   {method: 'POST'}).catch(function(){});
+    fetch('/api/morning-momentum/rescan', {method: 'POST'}).catch(function(){});
+    // Trigger fundamentals background refresh (both tabs)
+    fetch('/api/fundamentals?refresh=1').catch(function(){});
+    fetch('/api/sme/fundamentals?refresh=1').catch(function(){});
+
+    // Reset swing UI so it shows "scanning" state immediately
+    _swingN5Status = 'scanning'; _swingMcStatus = 'scanning';
+    _swingUpdateUI();
+
+    setTimeout(function() {
+      btn.disabled = false;
+      btn.classList.remove('working');
+      _showForceToast('🚀',
+        'All caches cleared. Live download started — results will update in a few minutes.');
+      setTimeout(function() {
+        var t = document.getElementById('force-refresh-toast');
+        if (t) t.classList.remove('show');
+      }, 6000);
+    }, 2500);
+  }).catch(function(err) {
+    btn.disabled = false;
+    btn.classList.remove('working');
+    _showForceToast('❌', 'Error: ' + (err.message || String(err)));
+    setTimeout(function() {
+      var t = document.getElementById('force-refresh-toast');
+      if (t) t.classList.remove('show');
+    }, 6000);
+  });
+}
+
+function _showForceToast(icon, msg) {
+  var t  = document.getElementById('force-refresh-toast');
+  var ti = document.getElementById('force-refresh-toast-icon');
+  var tm = document.getElementById('force-refresh-toast-msg');
+  if (!t) return;
+  if (ti) ti.textContent = icon;
+  if (tm) tm.textContent = msg;
+  t.classList.add('show');
+}
 </script>
+
+<!-- ── Force refresh toast notification ── -->
+<div id="force-refresh-toast">
+  <span class="toast-icon" id="force-refresh-toast-icon">⚡</span>
+  <span id="force-refresh-toast-msg"></span>
+</div>
+
 </body>
 </html>
