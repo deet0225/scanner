@@ -2887,8 +2887,17 @@ function fundLoad(force) {
         : (j.stale_count > 0
           ? ' · <span style="color:var(--text-muted);">' + j.stale_count + ' stale</span>'
           : ' · <span style="color:var(--green);">✓ all fresh</span>');
+      var completedMsg = '';
+      if (j.last_completed_ts && j.last_completed_ts > 0) {
+        var d = new Date(j.last_completed_ts * 1000);
+        var hh = String(d.getHours()).padStart(2,'0');
+        var mm = String(d.getMinutes()).padStart(2,'0');
+        completedMsg = ' · <span style="color:var(--text-muted);font-size:0.68rem;" title="Last full refresh completed">⬤ done ' + hh + ':' + mm + '</span>';
+      } else if (!j.bg_running && j.stale_count === 0) {
+        completedMsg = ' · <span style="color:var(--text-muted);font-size:0.68rem;">(from cache)</span>';
+      }
       document.getElementById('fund-source').innerHTML =
-        'Cache: ' + fresh + '/' + total + ' tickers' + bgMsg;
+        'Cache: ' + fresh + '/' + total + ' tickers' + bgMsg + completedMsg;
 
       // Render whatever is available now (may be partial on first load)
       renderFundamentals(j.stocks || []);
@@ -3069,6 +3078,11 @@ function forceRefreshLive() {
   btn.disabled = true;
   btn.classList.add('working');
   _showForceToast('⏳', 'Clearing all local caches on server…');
+
+  // Cancel any outstanding poll timers so they don't fire during the clear
+  // and accidentally start a second background worker before the new one begins.
+  if (_fundPollTimer) { clearTimeout(_fundPollTimer); _fundPollTimer = null; }
+  if (_smePollTimer)  { clearTimeout(_smePollTimer);  _smePollTimer  = null; }
 
   // Step 1: clear OHLCV cache (pkl files used by price-based scans)
   var p1 = fetch('/api/cache/clear', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });

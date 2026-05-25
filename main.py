@@ -141,6 +141,14 @@ _fund_cancel: threading.Event = threading.Event()
 _sme_cancel:  threading.Event = threading.Event()
 _active_tab:  str             = "swing"   # tracks the currently visible tab
 
+# Generation counters — incremented on each Force-Live-Data / cache-clear.
+# Each BG worker captures the generation at launch and self-terminates when it
+# detects a newer generation, preventing two workers racing on the same dict.
+_fund_generation:        int   = 0
+_fund_last_completed_ts: float = 0.0   # epoch when last FULL BG worker run finished
+_sme_generation:         int   = 0
+_sme_last_completed_ts:  float = 0.0   # epoch when last FULL SME BG worker run finished
+
 # ---------------------------------------------------------------------------
 # Dedicated Stock Momentum scan state  (independent of Swing Trade)
 # ---------------------------------------------------------------------------
@@ -672,7 +680,11 @@ async def fundamentals_cache_clear() -> JSONResponse:
 
     Useful when results differ between local and Render (e.g. stale disk cache).
     """
-    global _fund_result_cache_valid, _fund_result_cache_body, _fund_bg_running
+    global _fund_result_cache_valid, _fund_result_cache_body, _fund_bg_running, _fund_generation
+    # ── Increment generation FIRST so any currently-running BG worker sees it
+    # and self-terminates at the next batch boundary, preventing two workers from
+    # racing on the same _fund_data dict (the double-worker race condition).
+    _fund_generation += 1
     with _fund_data_lock:
         deleted_count = len(_fund_data)
         _fund_data.clear()   # wipe ALL entries (data + timestamps), not just reset _ts
@@ -736,7 +748,9 @@ async def sme_fundamentals_cache_clear() -> JSONResponse:
     actually fetches new data from Screener.in instead of returning stale
     cached responses from the prior refresh cycle.
     """
-    global _sme_result_cache_valid, _sme_result_cache_body, _sme_bg_running
+    global _sme_result_cache_valid, _sme_result_cache_body, _sme_bg_running, _sme_generation
+    # ── Increment generation so any running SME BG worker self-terminates
+    _sme_generation += 1
     with _sme_fund_lock:
         deleted_count = len(_sme_fund_data)
         _sme_fund_data.clear()   # wipe ALL entries, not just reset _ts
@@ -1325,8 +1339,13 @@ def _fund_refresh_ticker(ticker: str) -> tuple:
     return result, content_changed
 
 
-def _fund_bg_worker(tickers: list) -> None:
+def _fund_bg_worker(tickers: list, generation: int = 0) -> None:
     """Parallel background worker  -  runs via run_in_executor.
+
+    `generation` is captured from _fund_generation at launch time.  If the
+    global counter advances while this worker is running (because Force Live
+    Data was clicked again), the worker detects it at the next batch boundary
+    and exits cleanly, preventing two workers from racing on the same dict.
 
     Performance optimisations vs the previous sequential version:
       1. ThreadPoolExecutor(5 workers): ~5× speedup over serial downloads.
@@ -1339,7 +1358,7 @@ def _fund_bg_worker(tickers: list) -> None:
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    global _fund_bg_running
+    global _fund_bg_running, _fund_last_completed_ts
     MAX_WORKERS  = 12  # 12 parallel screener.in requests (raised from 10)
     BATCH_SIZE   = 50  # save checkpoint every N tickers
     total_refreshed = 0
@@ -1381,8 +1400,10 @@ def _fund_bg_worker(tickers: list) -> None:
 
     changed_total = 0
     for batch_start in range(0, len(stale), BATCH_SIZE):
-        if _fund_cancel.is_set():
-            logger.info("Fundamentals BG worker: cancelled after %d/%d tickers (tab switched)",
+        if _fund_cancel.is_set() or _fund_generation != generation:
+            logger.info("Fundamentals BG worker (gen %d): %s after %d/%d tickers",
+                        generation,
+                        "superseded by newer worker" if _fund_generation != generation else "cancelled (tab switched)",
                         total_refreshed, len(stale))
             _fund_cache_save()
             _fund_bg_running = False
@@ -1395,7 +1416,7 @@ def _fund_bg_worker(tickers: list) -> None:
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = {pool.submit(_worker, t): t for t in chunk}
             for future in as_completed(futures):
-                if _fund_cancel.is_set():
+                if _fund_cancel.is_set() or _fund_generation != generation:
                     # Cancel remaining futures and exit
                     for f in futures:
                         f.cancel()
@@ -1445,10 +1466,11 @@ def _fund_bg_worker(tickers: list) -> None:
 
     # Always final save to persist updated _ts / _gf flags
     _fund_cache_save()
+    _fund_last_completed_ts = time.time()
     logger.info(
-        "Fundamentals BG worker done: %d fetched, %d content-changed, "
+        "Fundamentals BG worker done (gen %d): %d fetched, %d content-changed, "
         "%d known-fail skipped, final save written",
-        total_refreshed, total_changed, total_skipped,
+        generation, total_refreshed, total_changed, total_skipped,
     )
     _fund_bg_running = False
 
@@ -1785,12 +1807,13 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
                 0 if t.upper() in scan_map else 1,              # in-scan-map first
             ),
         )
+        gen = _fund_generation   # capture generation so worker can detect superseding
 
-        async def _bg_task(tickers=priority_first):
+        async def _bg_task(tickers=priority_first, g=gen):
             global _fund_bg_running
             try:
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, _fund_bg_worker, tickers)
+                await loop.run_in_executor(None, _fund_bg_worker, tickers, g)
             except Exception:
                 _fund_bg_running = False
         asyncio.create_task(_bg_task())
@@ -1807,9 +1830,10 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
     # ------------------------------------------------------------------
     if not refresh and _fund_result_cache_valid and _fund_result_cache_body is not None:
         live_body = dict(_fund_result_cache_body)
-        live_body["bg_running"]   = _fund_bg_running
-        live_body["stale_count"]  = len(stale)
-        live_body["cache_fresh"]  = cache_fresh
+        live_body["bg_running"]        = _fund_bg_running
+        live_body["stale_count"]       = len(stale)
+        live_body["cache_fresh"]       = cache_fresh
+        live_body["last_completed_ts"] = _fund_last_completed_ts
         return JSONResponse(live_body)
 
     # Build combined record for every ticker that has at least some cached data
@@ -1890,6 +1914,7 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
         "cache_total":        len(all_tickers),
         "bg_running":         _fund_bg_running,
         "stale_count":        len(stale),
+        "last_completed_ts":  _fund_last_completed_ts,
         "last_updated_n500":  scan_state.get("last_updated"),
         "last_updated_mc250": mc_scan_state.get("last_updated"),
         "gates": {
@@ -2483,9 +2508,10 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
     return result, content_changed
 
 
-def _sme_bg_worker(tickers: list) -> None:
+def _sme_bg_worker(tickers: list, generation: int = 0) -> None:
     """Parallel background refresh for SME fundamentals.
 
+    `generation` mirrors the same superseding mechanism as _fund_bg_worker.
     Uses SME-aware fetching (_sme_fund_refresh_ticker) which additionally
     tries the '-SME' URL variant on screener.in for NSE Emerge stocks.
     Data is stored in the SEPARATE _sme_fund_data cache (not _fund_data).
@@ -2494,7 +2520,7 @@ def _sme_bg_worker(tickers: list) -> None:
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    global _sme_bg_running
+    global _sme_bg_running, _sme_last_completed_ts
     MAX_WORKERS = 12  # 12 parallel workers (raised from 10)
     BATCH_SIZE  = 50  # raised from 40 to match main fund worker
     total_refreshed = 0
@@ -2526,8 +2552,10 @@ def _sme_bg_worker(tickers: list) -> None:
         return t, result, changed
 
     for batch_start in range(0, len(stale), BATCH_SIZE):
-        if _sme_cancel.is_set():
-            logger.info("SME BG worker: cancelled after %d/%d tickers (tab switched)",
+        if _sme_cancel.is_set() or _sme_generation != generation:
+            logger.info("SME BG worker (gen %d): %s after %d/%d tickers",
+                        generation,
+                        "superseded by newer worker" if _sme_generation != generation else "cancelled (tab switched)",
                         total_refreshed, len(stale))
             _sme_cache_save()
             _sme_bg_running = False
@@ -2540,7 +2568,7 @@ def _sme_bg_worker(tickers: list) -> None:
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = {pool.submit(_worker, t): t for t in chunk}
             for future in as_completed(futures):
-                if _sme_cancel.is_set():
+                if _sme_cancel.is_set() or _sme_generation != generation:
                     for f in futures:
                         f.cancel()
                     break
@@ -2586,8 +2614,9 @@ def _sme_bg_worker(tickers: list) -> None:
                         end, len(stale), fetched_in_batch)
 
     _sme_cache_save()
-    logger.info("SME BG worker done: %d fetched, %d content-changed, %d known-fail skipped",
-                total_refreshed, total_changed, total_skipped)
+    _sme_last_completed_ts = time.time()
+    logger.info("SME BG worker done (gen %d): %d fetched, %d content-changed, %d known-fail skipped",
+                generation, total_refreshed, total_changed, total_skipped)
     _sme_bg_running = False
 
 
@@ -2903,12 +2932,13 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
     if stale and not _sme_bg_running:
         _sme_bg_running = True
         _sme_cancel.clear()   # allow this worker to run (user is on sme tab)
+        gen = _sme_generation   # capture generation so worker can detect superseding
 
-        async def _sme_bg_task(tickers=stale):
+        async def _sme_bg_task(tickers=stale, g=gen):
             global _sme_bg_running
             try:
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, _sme_bg_worker, tickers)
+                await loop.run_in_executor(None, _sme_bg_worker, tickers, g)
             except Exception:
                 _sme_bg_running = False
         asyncio.create_task(_sme_bg_task())
@@ -2923,9 +2953,10 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
     # ------------------------------------------------------------------
     if not refresh and _sme_result_cache_valid and _sme_result_cache_body is not None:
         live_body = dict(_sme_result_cache_body)
-        live_body["bg_running"]  = _sme_bg_running
-        live_body["stale_count"] = len(stale)
-        live_body["cache_fresh"] = cache_fresh
+        live_body["bg_running"]        = _sme_bg_running
+        live_body["stale_count"]       = len(stale)
+        live_body["cache_fresh"]       = cache_fresh
+        live_body["last_completed_ts"] = _sme_last_completed_ts
         return JSONResponse(live_body)
 
     combined = []
@@ -2974,15 +3005,16 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
 
     response_body = {
         "stocks":       top30,
-        "all_stocks":   combined,
-        "total":        len(combined),
-        "status":       "complete" if combined else "no_data",
-        "cache_fresh":  cache_fresh,
-        "cache_total":  len(all_tickers),
-        "bg_running":   _sme_bg_running,
-        "stale_count":  len(stale),
-        "nse_count":    nse_count,
-        "bse_count":    bse_count,
+        "all_stocks":         combined,
+        "total":              len(combined),
+        "status":             "complete" if combined else "no_data",
+        "cache_fresh":        cache_fresh,
+        "cache_total":        len(all_tickers),
+        "bg_running":         _sme_bg_running,
+        "stale_count":        len(stale),
+        "last_completed_ts":  _sme_last_completed_ts,
+        "nse_count":          nse_count,
+        "bse_count":          bse_count,
         "gates": {
             "roce_min":         _SME_ROCE_MIN,
             "roe_min":          _SME_ROE_MIN,
