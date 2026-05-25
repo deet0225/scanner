@@ -1795,12 +1795,21 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
             if v is not None:
                 rec[k] = v
 
-        # Scan results override with fresher values + add technical score
-        for k in ("sector", "debt_equity", "market_cap_cr", "score",
-                  "rsi", "return_20d", "rs_outperf_pct", "price"):
+        # Scan results add technical score + live price fields.
+        # NOTE: debt_equity and market_cap_cr are intentionally NOT overridden
+        # here — the fundamentals hard gate (_FUND_DE_MAX = 1.0) is calibrated
+        # against Screener.in balance-sheet D/E.  The swing scan fetches D/E
+        # from Yahoo Finance / NSE live API (different formula — TTM vs latest BS),
+        # so overriding with scan D/E causes inconsistent gate results between
+        # local (scan finished) and Render (scan still running).  Screener.in is
+        # the authoritative source for all hard-gate fields on this tab.
+        for k in ("sector", "score", "rsi", "return_20d", "rs_outperf_pct", "price"):
             v = scan_rec.get(k)
             if v is not None:
                 rec[k] = v
+        # market_cap_cr: use scan value ONLY as a fallback when Screener.in has no data
+        if "market_cap_cr" not in rec and scan_rec.get("market_cap_cr") is not None:
+            rec["market_cap_cr"] = scan_rec["market_cap_cr"]
         if scan_rec.get("display_ticker"):
             rec["display_ticker"] = scan_rec["display_ticker"]
 
