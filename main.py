@@ -659,27 +659,40 @@ async def cache_clear() -> JSONResponse:
 async def fundamentals_cache_clear() -> JSONResponse:
     """Force a full re-download of all fundamentals data on the next request.
 
-    Resets every ticker's _ts timestamp to 0 so the background worker treats
-    ALL entries as stale and re-fetches from Screener.in from scratch.
-    Invalidates the in-memory result cache so the next GET /api/fundamentals
-    rebuilds the response from freshly-downloaded data.
+    Completely wipes the in-memory cache dict (not just resetting _ts) AND
+    deletes the on-disk JSON file so that all tickers are re-fetched from
+    Screener.in from scratch — identical semantics to /api/cache/clear which
+    physically deletes OHLCV pkl files.
 
     Useful when results differ between local and Render (e.g. stale disk cache).
     """
-    global _fund_result_cache_valid, _fund_result_cache_body
-    reset_count = 0
+    global _fund_result_cache_valid, _fund_result_cache_body, _fund_bg_running
     with _fund_data_lock:
-        for entry in _fund_data.values():
-            if isinstance(entry, dict):
-                entry["_ts"] = 0.0
-                entry.pop("_gf", None)   # allow known-fail tickers to be re-checked
-                reset_count += 1
+        deleted_count = len(_fund_data)
+        _fund_data.clear()   # wipe ALL entries (data + timestamps), not just reset _ts
+    # Delete the JSON file from disk so a restart doesn't reload stale data
+    disk_deleted = False
+    try:
+        if _FUND_CACHE_FILE.exists():
+            _FUND_CACHE_FILE.unlink()
+            disk_deleted = True
+    except Exception as exc:
+        logger.warning("Could not delete fundamentals cache file: %s", exc)
     _fund_result_cache_valid = False
     _fund_result_cache_body  = None
-    logger.info("Fundamentals cache force-reset: %d entries invalidated", reset_count)
+    _fund_bg_running         = False   # allow a fresh BG run to start immediately
+    logger.info(
+        "Fundamentals cache CLEARED: %d in-memory entries removed, disk file %s",
+        deleted_count, "deleted" if disk_deleted else "delete-failed (check permissions)",
+    )
     return JSONResponse({
-        "reset":   reset_count,
-        "message": f"{reset_count} fundamentals entries invalidated — full re-download will start on next tab visit",
+        "reset":        deleted_count,
+        "disk_deleted": disk_deleted,
+        "message": (
+            f"{deleted_count} fundamentals entries cleared and JSON file "
+            f"{'deleted' if disk_deleted else 'could not be deleted'} — "
+            "full re-download will start on next tab visit"
+        ),
     })
 
 
@@ -688,22 +701,35 @@ async def sme_fundamentals_cache_clear() -> JSONResponse:
     """Force a full re-download of all SME fundamentals data on the next request.
 
     Same semantics as /api/fundamentals/clear-cache but for the SME universe
-    (NSE Emerge + BSE SME stocks).
+    (NSE Emerge + BSE SME stocks).  Wipes the in-memory dict AND deletes the
+    on-disk JSON file so stale data cannot be reloaded on a restart.
     """
-    global _sme_result_cache_valid, _sme_result_cache_body
-    reset_count = 0
+    global _sme_result_cache_valid, _sme_result_cache_body, _sme_bg_running
     with _sme_fund_lock:
-        for entry in _sme_fund_data.values():
-            if isinstance(entry, dict):
-                entry["_ts"] = 0.0
-                entry.pop("_gf", None)
-                reset_count += 1
+        deleted_count = len(_sme_fund_data)
+        _sme_fund_data.clear()   # wipe ALL entries, not just reset _ts
+    disk_deleted = False
+    try:
+        if _SME_FUND_CACHE_FILE.exists():
+            _SME_FUND_CACHE_FILE.unlink()
+            disk_deleted = True
+    except Exception as exc:
+        logger.warning("Could not delete SME fundamentals cache file: %s", exc)
     _sme_result_cache_valid = False
     _sme_result_cache_body  = None
-    logger.info("SME fundamentals cache force-reset: %d entries invalidated", reset_count)
+    _sme_bg_running         = False   # allow a fresh BG run to start immediately
+    logger.info(
+        "SME fundamentals cache CLEARED: %d in-memory entries removed, disk file %s",
+        deleted_count, "deleted" if disk_deleted else "delete-failed (check permissions)",
+    )
     return JSONResponse({
-        "reset":   reset_count,
-        "message": f"{reset_count} SME fundamentals entries invalidated — full re-download will start on next tab visit",
+        "reset":        deleted_count,
+        "disk_deleted": disk_deleted,
+        "message": (
+            f"{deleted_count} SME fundamentals entries cleared and JSON file "
+            f"{'deleted' if disk_deleted else 'could not be deleted'} — "
+            "full re-download will start on next tab visit"
+        ),
     })
 
 
