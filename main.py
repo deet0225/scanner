@@ -664,6 +664,12 @@ async def fundamentals_cache_clear() -> JSONResponse:
     Screener.in from scratch — identical semantics to /api/cache/clear which
     physically deletes OHLCV pkl files.
 
+    Also clears the ScreenerClient 1-hour in-memory HTML-scrape cache so that
+    the background worker actually fetches fresh data from Screener.in instead
+    of returning its own stale cached responses.  This is the primary reason
+    "Force Live Data" used to produce different results between local and Render
+    without a full process restart.
+
     Useful when results differ between local and Render (e.g. stale disk cache).
     """
     global _fund_result_cache_valid, _fund_result_cache_body, _fund_bg_running
@@ -681,16 +687,37 @@ async def fundamentals_cache_clear() -> JSONResponse:
     _fund_result_cache_valid = False
     _fund_result_cache_body  = None
     _fund_bg_running         = False   # allow a fresh BG run to start immediately
+
+    # ── CRITICAL: also clear the ScreenerClient 1-hour in-memory HTML-scrape cache.
+    # Without this, the background worker that re-populates _fund_data calls
+    # _fc.get_extra_fundamentals() → ScreenerClient.get() which returns stale cached
+    # HTML-scraped values from its own in-process dict (TTL 1 hour). The _fund_data
+    # dict appears to be cleared but gets immediately re-populated with the SAME old
+    # values from the ScreenerClient cache — making "Force Live Data" a no-op for
+    # any ticker fetched within the past hour.
+    screener_cleared = 0
+    try:
+        from data_sources import ScreenerClient as _SC
+        screener_cleared = len(_SC._cache)
+        _SC._cache.clear()
+        _SC._cache_ts.clear()
+    except Exception as exc:
+        logger.warning("Could not clear ScreenerClient cache: %s", exc)
+
     logger.info(
-        "Fundamentals cache CLEARED: %d in-memory entries removed, disk file %s",
-        deleted_count, "deleted" if disk_deleted else "delete-failed (check permissions)",
+        "Fundamentals cache CLEARED: %d in-memory entries removed, "
+        "%d ScreenerClient HTML-cache entries cleared, disk file %s",
+        deleted_count, screener_cleared,
+        "deleted" if disk_deleted else "delete-failed (check permissions)",
     )
     return JSONResponse({
-        "reset":        deleted_count,
-        "disk_deleted": disk_deleted,
+        "reset":             deleted_count,
+        "screener_cleared":  screener_cleared,
+        "disk_deleted":      disk_deleted,
         "message": (
-            f"{deleted_count} fundamentals entries cleared and JSON file "
-            f"{'deleted' if disk_deleted else 'could not be deleted'} — "
+            f"{deleted_count} fundamentals entries cleared, "
+            f"{screener_cleared} Screener.in HTML-cache entries cleared, "
+            f"JSON file {'deleted' if disk_deleted else 'could not be deleted'} — "
             "full re-download will start on next tab visit"
         ),
     })
@@ -703,6 +730,11 @@ async def sme_fundamentals_cache_clear() -> JSONResponse:
     Same semantics as /api/fundamentals/clear-cache but for the SME universe
     (NSE Emerge + BSE SME stocks).  Wipes the in-memory dict AND deletes the
     on-disk JSON file so stale data cannot be reloaded on a restart.
+
+    Also clears the ScreenerClient 1-hour HTML-scrape cache (same fix as the
+    main fundamentals clear endpoint) so that get_extra_sme_fundamentals()
+    actually fetches new data from Screener.in instead of returning stale
+    cached responses from the prior refresh cycle.
     """
     global _sme_result_cache_valid, _sme_result_cache_body, _sme_bg_running
     with _sme_fund_lock:
@@ -718,16 +750,31 @@ async def sme_fundamentals_cache_clear() -> JSONResponse:
     _sme_result_cache_valid = False
     _sme_result_cache_body  = None
     _sme_bg_running         = False   # allow a fresh BG run to start immediately
+
+    # ── Clear ScreenerClient HTML-scrape cache (see fundamentals_cache_clear comment)
+    screener_cleared = 0
+    try:
+        from data_sources import ScreenerClient as _SC
+        screener_cleared = len(_SC._cache)
+        _SC._cache.clear()
+        _SC._cache_ts.clear()
+    except Exception as exc:
+        logger.warning("Could not clear ScreenerClient cache (SME): %s", exc)
+
     logger.info(
-        "SME fundamentals cache CLEARED: %d in-memory entries removed, disk file %s",
-        deleted_count, "deleted" if disk_deleted else "delete-failed (check permissions)",
+        "SME fundamentals cache CLEARED: %d in-memory entries removed, "
+        "%d ScreenerClient HTML-cache entries cleared, disk file %s",
+        deleted_count, screener_cleared,
+        "deleted" if disk_deleted else "delete-failed (check permissions)",
     )
     return JSONResponse({
-        "reset":        deleted_count,
-        "disk_deleted": disk_deleted,
+        "reset":             deleted_count,
+        "screener_cleared":  screener_cleared,
+        "disk_deleted":      disk_deleted,
         "message": (
-            f"{deleted_count} SME fundamentals entries cleared and JSON file "
-            f"{'deleted' if disk_deleted else 'could not be deleted'} — "
+            f"{deleted_count} SME fundamentals entries cleared, "
+            f"{screener_cleared} Screener.in HTML-cache entries cleared, "
+            f"JSON file {'deleted' if disk_deleted else 'could not be deleted'} — "
             "full re-download will start on next tab visit"
         ),
     })

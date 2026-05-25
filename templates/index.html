@@ -3078,12 +3078,17 @@ function forceRefreshLive() {
   var p3 = fetch('/api/sme/fundamentals/clear-cache', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
 
   Promise.all([p1, p2, p3]).then(function(results) {
-    var ohlcvDeleted = results[0].deleted || 0;
-    var fundReset    = results[1].reset   || 0;
-    var smeReset     = results[2].reset   || 0;
+    var ohlcvDeleted   = results[0].deleted          || 0;
+    var fundReset      = results[1].reset            || 0;
+    var scClearedFund  = results[1].screener_cleared || 0;
+    var smeReset       = results[2].reset            || 0;
+    var scClearedSme   = results[2].screener_cleared || 0;
+    var scTotal        = scClearedFund + scClearedSme;
     _showForceToast('✅',
       'Cleared: ' + ohlcvDeleted + ' OHLCV files, ' +
-      fundReset + ' fundamentals, ' + smeReset + ' SME entries. Re-downloading…');
+      fundReset + ' fund entries, ' + smeReset + ' SME entries' +
+      (scTotal > 0 ? ', ' + scTotal + ' Screener.in HTML-cache entries' : '') +
+      '. Re-downloading from scratch…');
 
     // Trigger fresh scans for all scan types (price/technical tabs)
     fetch('/api/rescan',                  {method: 'POST'}).catch(function(){});
@@ -3102,7 +3107,9 @@ function forceRefreshLive() {
       btn.disabled = false;
       btn.classList.remove('working');
       _showForceToast('🚀',
-        'All caches cleared. Live download started — results will update in a few minutes.');
+        'All caches cleared (incl. Screener.in HTML cache). Live download started — ' +
+        'Fundamentals/SME tabs show partial data while 750 tickers re-fetch (2–5 min). ' +
+        'Wait for "✓ all fresh" indicator before comparing results across servers.');
       setTimeout(function() {
         var t = document.getElementById('force-refresh-toast');
         if (t) t.classList.remove('show');
