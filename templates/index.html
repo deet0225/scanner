@@ -2252,7 +2252,8 @@ function _smeUpdateProgress(j) {
   }
 }
 
-function smeLoad(forceRefresh) {
+function smeLoad(forceRefresh, _retries) {
+  _retries = _retries || 0;
   var btn    = document.getElementById('sme-refresh-btn');
   var loadEl = document.getElementById('sme-loading-msg');
   if (btn)    btn.classList.add('scanning');
@@ -2266,7 +2267,9 @@ function smeLoad(forceRefresh) {
     .then(function(r) {
       if (!r.ok || !r.headers.get('content-type').includes('application/json')) {
         return r.text().then(function(t) {
-          throw new Error('HTTP ' + r.status + ' — server returned non-JSON: ' + t.substring(0, 200));
+          var err = new Error('HTTP ' + r.status + ' — server returned non-JSON: ' + t.substring(0, 200));
+          err._httpStatus = r.status;
+          throw err;
         });
       }
       return r.json();
@@ -2305,6 +2308,18 @@ function smeLoad(forceRefresh) {
     .catch(function(err) {
       if (btn)    btn.classList.remove('scanning');
       if (loadEl) loadEl.style.display = 'none';
+      // Retry on gateway errors (502/503) — Render free tier cold start
+      var httpStatus = err._httpStatus || 0;
+      if ((httpStatus === 502 || httpStatus === 503) && _retries < 5 && activeTab === 'sme') {
+        var attempt = _retries + 1;
+        document.getElementById('sme-results-body').innerHTML =
+          '<tr><td colspan="14"><div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2 text-warning"></i>' +
+          '⏳ Server is waking up — retrying in 6 s… (' + attempt + '/5)</div></td></tr>';
+        _smePollTimer = setTimeout(function() {
+          if (activeTab === 'sme') smeLoad(forceRefresh, attempt);
+        }, 6000);
+        return;
+      }
       document.getElementById('sme-results-body').innerHTML =
         '<tr><td colspan="14"><div class="empty-state"><i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
         'Error: ' + err + '</div></td></tr>';
@@ -2844,13 +2859,14 @@ function _fundUpdateProgress(j) {
   }
 }
 
-function fundLoad(force) {
+function fundLoad(force, _retries) {
+  _retries = _retries || 0;
   var btn = document.getElementById('fund-refresh-btn');
   if (btn) btn.classList.add('scanning');
   var loadEl = document.getElementById('fund-loading-msg');
   if (loadEl) { loadEl.style.display = 'block'; }
   // Only blank the table on explicit force-refresh; silent polls keep existing rows visible
-  if (force) {
+  if (force && _retries === 0) {
     document.getElementById('fund-results-body').innerHTML =
       '<tr><td colspan="13"><div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2"></i>Loading…</div></td></tr>';
   }
@@ -2863,7 +2879,9 @@ function fundLoad(force) {
     .then(function(r) {
       if (!r.ok || !r.headers.get('content-type').includes('application/json')) {
         return r.text().then(function(t) {
-          throw new Error('HTTP ' + r.status + ' — server returned non-JSON: ' + t.substring(0, 200));
+          var err = new Error('HTTP ' + r.status + ' — server returned non-JSON: ' + t.substring(0, 200));
+          err._httpStatus = r.status;
+          throw err;
         });
       }
       return r.json();
@@ -2913,6 +2931,18 @@ function fundLoad(force) {
     .catch(function(err) {
       if (btn) btn.classList.remove('scanning');
       if (loadEl) loadEl.style.display = 'none';
+      // Retry on gateway errors (502/503) — Render free tier cold start
+      var httpStatus = err._httpStatus || 0;
+      if ((httpStatus === 502 || httpStatus === 503) && _retries < 5 && activeTab === 'fund') {
+        var attempt = _retries + 1;
+        document.getElementById('fund-results-body').innerHTML =
+          '<tr><td colspan="13"><div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2 text-warning"></i>' +
+          '⏳ Server is waking up — retrying in 6 s… (' + attempt + '/5)</div></td></tr>';
+        _fundPollTimer = setTimeout(function() {
+          if (activeTab === 'fund') fundLoad(force, attempt);
+        }, 6000);
+        return;
+      }
       document.getElementById('fund-results-body').innerHTML =
         '<tr><td colspan="13"><div class="empty-state"><i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
         'Error loading fundamentals: ' + err + '</div></td></tr>';
