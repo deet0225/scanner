@@ -62,6 +62,13 @@ _SESSION.headers.update({
     "Accept-Language": "en-US,en;q=0.9",
     "Referer":         "https://www.nseindia.com/",
 })
+# Increase connection pool for screener.in to match the 12-thread bg-worker
+_screener_adapter = requests.adapters.HTTPAdapter(
+    pool_connections=12,
+    pool_maxsize=12,
+)
+_SESSION.mount("https://www.screener.in", _screener_adapter)
+_SESSION.mount("http://www.screener.in", _screener_adapter)
 
 # Separate session for Yahoo Finance (no NSE referer — Yahoo rejects it)
 _YF_SESSION = requests.Session()
