@@ -735,7 +735,7 @@
     </button>
     <div style="margin-left:auto; font-size:0.72rem; color:var(--text-muted); padding:5px 12px;">
       SME High-Growth Rankings &mdash; NSE Emerge &amp; BSE SME IPO &mdash;
-      ROCE&nbsp;≥15% &middot; ROE&nbsp;≥15% &middot; Rev&nbsp;Growth&nbsp;≥25% &middot; Profit&nbsp;Growth&nbsp;≥25% &middot; OPM&nbsp;≥8% &middot; TTM&nbsp;≥15% &middot; CCR&nbsp;&gt;-1.0
+      ROCE&nbsp;≥15% &middot; ROE&nbsp;≥15% &middot; Rev&nbsp;Growth&nbsp;≥25% &middot; Profit&nbsp;Growth&nbsp;≥25% &middot; OPM/NPM&nbsp;≥8% &middot; TTM&nbsp;≥15% &middot; CCR&nbsp;&gt;-1.0
     </div>
   </div>
 
@@ -752,7 +752,7 @@
       <div class="scan-status-txt" style="font-size:0.95rem;">Fetching SME fundamental data&hellip;</div>
       <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">
         Loading from Screener.in cache &mdash; may take 60–120 s on first run.<br>
-        <span style="color:var(--yellow);">Gates: ROCE ≥ 15% · ROE ≥ 15% · Rev Growth ≥ 25% · Profit Growth ≥ 25% · OPM ≥ 8% · TTM ≥ 15%</span><br>
+        <span style="color:var(--yellow);">Gates: ROCE ≥ 15% · ROE ≥ 15% · Rev Growth ≥ 25% · Profit Growth ≥ 25% · OPM/NPM ≥ 8% · TTM ≥ 15%</span><br>
         <span style="color:var(--yellow);">Cash quality: CCR &gt; −1.0 · CF/Debt &gt; −0.5 (leveraged) · Deep CFO &lt; −30Cr needs OPM confirmation</span><br>
         <span style="color:var(--text-muted); font-size:0.72rem;">CCR = Cash Conversion Ratio (CFO ÷ Net Profit). CCR &lt; −1 = profit inflation red flag. Positive CFO always passes.</span>
       </div>
@@ -780,7 +780,7 @@
         <th>Mkt Cap</th>
         <th title="Debt-to-Equity ratio — lower is better">D/E</th>
         <th title="Return on Capital Employed · sub: ROE">ROCE %</th>
-        <th title="Operating Profit Margin — core business profitability (gate ≥ 8%)">OPM %</th>
+        <th title="Net Profit Margin (NPM) — used when OPM is unavailable on Screener.in for SME/Emerge stocks (gate ≥ 8%)">OPM / NPM %</th>
         <th title="Promoter stake">Promoter</th>
         <th title="FII + DII combined">Inst %</th>
         <th title="CFO Yield + CCR (Cash Conversion Ratio) + CF/Debt — composite cash quality. CCR &lt; -1.0 = fraud red flag">CFO / CCR</th>
@@ -806,7 +806,7 @@
     <span class="fund-grade fund-grade-d">D &lt;35</span>
     <span style="margin-left:8px; color:var(--blue);">&#127981; NSE Emerge</span>
     <span style="margin-left:4px; color:#38bdf8;">&#127981; BSE SME</span>
-    <span style="margin-left:8px;">Growth-Acceleration scoring: 55% Growth+TTM · 18% Quality · 12% Cash · 8% Debt · 7% Value+Size</span>
+    <span style="margin-left:8px;">Growth-Acceleration scoring: 55% Growth+TTM · 18% Quality · 12% Cash · 8% Debt · 7% Value+Size · OPM/NPM gate ≥8%</span>
     <span style="margin-left:8px; color:var(--yellow);">↑ = TTM accelerating vs 3Y CAGR (strong order book signal)</span>
   </div>
 </div>
@@ -2334,7 +2334,7 @@ function renderSME(stocks) {
       '<strong>No SME stocks passed high-growth gates yet</strong><br>' +
       '<small style="color:var(--text-muted);">' +
       'Growth: Profit ≥ 25% · Sales ≥ 25% · TTM ≥ 15%<br>' +
-      'Quality: ROCE ≥ 15% · ROE ≥ 15% · OPM ≥ 8% · D/E ≤ 1.5<br>' +
+      'Quality: ROCE ≥ 15% · ROE ≥ 15% · OPM/NPM ≥ 8% · D/E ≤ 1.5<br>' +
       'Cash Quality: CCR &gt; -1.0 (fraud filter) · CF/Debt &gt; -0.5 if leveraged · Positive CFO always passes.<br>' +
       'Progress bar above shows download status.</small></div></td></tr>';
     return;
@@ -2382,11 +2382,15 @@ function renderSME(stocks) {
       : '<span style="color:var(--text-muted);">N/A</span>';
 
     // OPM (Operating Profit Margin) — gate ≥8%; green ≥20%, yellow ≥8%
-    var opm    = s.opm;
+    // Fall back to NPM (Net Profit Margin) when OPM is unavailable (common for SME/Emerge
+    // stocks on Screener.in which reports "NPM last year" instead of OPM for many listings)
+    var opm    = s.opm != null ? s.opm : s.net_profit_margin;
+    var opmIsNpm = s.opm == null && s.net_profit_margin != null;
     var opmCls = opm == null ? '' : opm >= 20 ? 'vs-sector-pos' : opm >= 8 ? 'de-ok' : 'vs-sector-neg';
     var opmStr = opm != null
       ? '<span class="' + opmCls + '">' + Number(opm).toFixed(1) + '%</span>' +
-        (s.net_profit_margin != null ? '<div class="sector-sub">NPM:' + Number(s.net_profit_margin).toFixed(1) + '%</div>' : '')
+        '<div class="sector-sub" style="color:var(--text-muted);font-size:0.65rem;">' + (opmIsNpm ? 'NPM (last yr)' : 'OPM') + '</div>' +
+        (!opmIsNpm && s.net_profit_margin != null ? '<div class="sector-sub">NPM:' + Number(s.net_profit_margin).toFixed(1) + '%</div>' : '')
       : '<span style="color:var(--text-muted);">N/A</span>';
 
     // Promoter

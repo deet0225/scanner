@@ -2069,7 +2069,9 @@ def _passes_sme_gates(rec: dict) -> bool:
         return False
 
     # OPM gate — core business must be operationally profitable
-    opm = rec.get("opm")
+    # Fall back to NPM (net profit margin) when OPM is unavailable (common for SME stocks
+    # on Screener.in which reports "NPM last year" instead of OPM for many Emerge listings)
+    opm = rec.get("opm") if rec.get("opm") is not None else rec.get("net_profit_margin")
     opm_f = float(opm) if opm is not None else None
     if opm_f is not None and opm_f < _SME_OPM_MIN:
         return False
@@ -2183,7 +2185,8 @@ def _sme_quality_score(rec: dict) -> float:
 
     # Operating Profit Margin  -  5 pts  (replaces hard CFO gate in quality sense)
     # OPM ≥ 8% (gate); scoring: 8%=2, 15%=3.75, 25%=5 (full)
-    opm = rec.get("opm")
+    # Fall back to NPM when OPM is unavailable (common for SME/Emerge stocks on Screener.in)
+    opm = rec.get("opm") if rec.get("opm") is not None else rec.get("net_profit_margin")
     if opm is not None:
         opm_f = float(opm)
         score += min(5.0, max(0.0, opm_f * 0.20))
