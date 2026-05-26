@@ -1199,7 +1199,9 @@ def _fund_cache_load() -> None:
                     # Invalidate if missing new debt/cashflow fields (v3 schema)
                     missing_cashflow = not any(k in entry for k in
                                                ("current_ratio", "cash_from_operations", "cfo_yield"))
-                    if missing_basic or missing_enhanced or missing_cashflow:
+                    # Invalidate if missing OPM/NPM fields (added in later fix)
+                    missing_margins  = not any(k in entry for k in ("opm", "net_profit_margin"))
+                    if missing_basic or missing_enhanced or missing_cashflow or missing_margins:
                         entry["_ts"] = 0   # force re-fetch without deleting
                         invalidated += 1
             logger.info(
@@ -1263,7 +1265,8 @@ def _fund_refresh_ticker(ticker: str) -> tuple:
                   "sales_growth_ttm", "profit_growth_ttm",
                   "pe_ratio", "book_value", "dividend_yield",
                   "debt_equity", "market_cap_cr", "current_price",
-                  "current_ratio", "cash_from_operations"):
+                  "current_ratio", "cash_from_operations",
+                  "opm", "net_profit_margin"):
             if k in extra and extra[k] is not None:
                 result[k] = extra[k]
     except Exception:
@@ -1981,7 +1984,8 @@ def _sme_cache_load() -> None:
             for entry in _sme_fund_data.values():
                 if isinstance(entry, dict) and entry.get("_ts", 0) > 0:
                     if "roce" not in entry or not any(k in entry for k in
-                                                      ("cash_from_operations", "cfo_yield")):
+                                                      ("cash_from_operations", "cfo_yield")) \
+                                             or not any(k in entry for k in ("opm", "net_profit_margin")):
                         entry["_ts"] = 0
                         invalidated += 1
             logger.info("SME fund cache loaded: %d entries (%d invalidated)", len(_sme_fund_data), invalidated)
@@ -2411,7 +2415,8 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
                   "sales_growth_ttm", "profit_growth_ttm",
                   "pe_ratio", "book_value", "dividend_yield",
                   "debt_equity", "market_cap_cr", "current_price",
-                  "current_ratio", "cash_from_operations"):
+                  "current_ratio", "cash_from_operations",
+                  "opm", "net_profit_margin"):
             if k in extra and extra[k] is not None:
                 result[k] = extra[k]
     except Exception:
