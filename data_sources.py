@@ -161,9 +161,20 @@ class ScreenerClient:
     """
     Scrapes screener.in for fundamental data (quarterly filing-accurate for Indian stocks).
 
-    Fields extracted (consolidated page preferred, standalone fallback):
-      market_cap_cr, pe_ratio, book_value, roce, roe, dividend_yield,
-      promoter_holding, sales_growth_pct, profit_growth_3y, debt_equity (if present)
+    Consolidated page is tried first; standalone is used as fallback.
+
+    Fields extracted:
+      market_cap_cr, current_price, pe_ratio, book_value, roce, roe,
+      dividend_yield, debt_equity, current_ratio, peg_ratio, pb_ratio,
+      face_value, eps, industry_pe, week52_high, week52_low,
+      quick_ratio, interest_coverage,
+      promoter_holding, fii_holding, dii_holding, public_holding,
+      sales_growth_pct, sales_growth_5y, sales_growth_10y, sales_growth_ttm,
+      profit_growth_3y, profit_growth_5y, profit_growth_10y, profit_growth_ttm,
+      roe_5y, roe_10y,
+      cash_from_operations,
+      opm  (Operating Profit Margin % — from P&L "OPM %" row),
+      net_profit_margin  (computed as Net Profit / Sales × 100 from P&L; ratios table fallback)
     """
 
     _BASE   = "https://www.screener.in/company/{sym}/{mode}/"

@@ -74,6 +74,14 @@ NULL values (data pending) = gate not applied for that field.
 
 ---
 
+## Table Columns (notable)
+
+| Column | Description |
+|--------|-------------|
+| OPM / NPM % | Operating Profit Margin (from P&L); falls back to Net Profit Margin (computed as Net Profit ÷ Sales × 100) when OPM is unavailable (e.g. financial companies) |
+
+---
+
 ## Grade Thresholds
 | Grade | Score |
 |---|---|
