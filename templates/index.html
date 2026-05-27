@@ -415,7 +415,7 @@
     </span>
     <span id="last-updated" style="font-size:0.78rem;" class="topbar-muted">--</span>
     <button class="force-refresh-btn" id="force-refresh-btn" onclick="forceRefreshLive()"
-            title="Clear local OHLCV cache and force-download fresh live data from NSE/BSE — use when results differ from Render">
+            title="Stop all running scans, clear all caches (OHLCV + Fundamentals + SME), then re-download fresh live data from scratch — use when results differ from Render">
       <i class="bi bi-cloud-download icon"></i>
       <i class="bi bi-arrow-clockwise spin"></i>
       Force Live Data
@@ -735,6 +735,7 @@
     </button>
     <div style="margin-left:auto; font-size:0.72rem; color:var(--text-muted); padding:5px 12px;">
       SME High-Growth Rankings &mdash; NSE Emerge &amp; BSE SME IPO &mdash;
+
       ROCE&nbsp;≥15% &middot; ROE&nbsp;≥15% &middot; Rev&nbsp;Growth&nbsp;≥25% &middot; Profit&nbsp;Growth&nbsp;≥25% &middot; OPM/NPM&nbsp;≥8% &middot; TTM&nbsp;≥15% &middot; CCR&nbsp;&gt;-1.0
     </div>
   </div>
@@ -3105,73 +3106,84 @@ function fmtNum(v) {
 // ── Startup ── connect both N500 + MC250 streams right away
 swingConnect();
 
-// ── Force Live Data Refresh (clear ALL caches + rescan all tabs) ────────────
+// ── Force Live Data Refresh (stop all scans → clear ALL caches → rescan) ────
 function forceRefreshLive() {
   var btn = document.getElementById('force-refresh-btn');
   if (!btn || btn.disabled) return;
   btn.disabled = true;
   btn.classList.add('working');
-  _showForceToast('⏳', 'Clearing all local caches on server…');
+  _showForceToast('🛑', 'Stopping all running scans…');
 
   // Cancel any outstanding poll timers so they don't fire during the clear
   // and accidentally start a second background worker before the new one begins.
   if (_fundPollTimer) { clearTimeout(_fundPollTimer); _fundPollTimer = null; }
   if (_smePollTimer)  { clearTimeout(_smePollTimer);  _smePollTimer  = null; }
 
-  // Step 1: clear OHLCV cache (pkl files used by price-based scans)
-  var p1 = fetch('/api/cache/clear', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
-  // Step 2: invalidate fundamentals cache (screener.in data, JSON)
-  var p2 = fetch('/api/fundamentals/clear-cache', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
-  // Step 3: invalidate SME fundamentals cache (screener.in data, JSON)
-  var p3 = fetch('/api/sme/fundamentals/clear-cache', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
+  // Step 0: stop ALL running scans (swing, momentum, morning-star, fund BG, SME BG)
+  // Must complete before cache clear so in-flight workers don't re-populate
+  // the cache we are about to wipe.
+  fetch('/api/stop-all-scans', {method: 'POST'})
+    .then(function(r){ return r.json(); })
+    .catch(function(){ return {}; })
+    .then(function() {
+      _showForceToast('⏳', 'All scans stopped. Clearing all local caches…');
 
-  Promise.all([p1, p2, p3]).then(function(results) {
-    var ohlcvDeleted   = results[0].deleted          || 0;
-    var fundReset      = results[1].reset            || 0;
-    var scClearedFund  = results[1].screener_cleared || 0;
-    var smeReset       = results[2].reset            || 0;
-    var scClearedSme   = results[2].screener_cleared || 0;
-    var scTotal        = scClearedFund + scClearedSme;
-    _showForceToast('✅',
-      'Cleared: ' + ohlcvDeleted + ' OHLCV files, ' +
-      fundReset + ' fund entries, ' + smeReset + ' SME entries' +
-      (scTotal > 0 ? ', ' + scTotal + ' Screener.in HTML-cache entries' : '') +
-      '. Re-downloading from scratch…');
+      // Step 1: clear OHLCV cache (pkl files used by price-based scans)
+      var p1 = fetch('/api/cache/clear', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
+      // Step 2: invalidate fundamentals cache (screener.in data, JSON)
+      var p2 = fetch('/api/fundamentals/clear-cache', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
+      // Step 3: invalidate SME fundamentals cache (screener.in data, JSON)
+      var p3 = fetch('/api/sme/fundamentals/clear-cache', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
 
-    // Trigger fresh scans for all scan types (price/technical tabs)
-    fetch('/api/rescan',                  {method: 'POST'}).catch(function(){});
-    fetch('/api/microcap/rescan',         {method: 'POST'}).catch(function(){});
-    fetch('/api/stock-momentum/rescan',   {method: 'POST'}).catch(function(){});
-    fetch('/api/morning-momentum/rescan', {method: 'POST'}).catch(function(){});
-    // Trigger fundamentals background refresh (both tabs)
-    fetch('/api/fundamentals?refresh=1').catch(function(){});
-    fetch('/api/sme/fundamentals?refresh=1').catch(function(){});
+      Promise.all([p1, p2, p3]).then(function(results) {
+        var ohlcvDeleted   = results[0].deleted          || 0;
+        var fundReset      = results[1].reset            || 0;
+        var scClearedFund  = results[1].screener_cleared || 0;
+        var smeReset       = results[2].reset            || 0;
+        var scClearedSme   = results[2].screener_cleared || 0;
+        var scTotal        = scClearedFund + scClearedSme;
+        _showForceToast('✅',
+          'Cleared: ' + ohlcvDeleted + ' OHLCV files, ' +
+          fundReset + ' fund entries, ' + smeReset + ' SME entries' +
+          (scTotal > 0 ? ', ' + scTotal + ' Screener.in HTML-cache entries' : '') +
+          '. Re-downloading from scratch…');
 
-    // Reset swing UI so it shows "scanning" state immediately
-    _swingN5Status = 'scanning'; _swingMcStatus = 'scanning';
-    _swingUpdateUI();
+        // Trigger fresh scans for all scan types (price/technical tabs)
+        fetch('/api/rescan',                  {method: 'POST'}).catch(function(){});
+        fetch('/api/microcap/rescan',         {method: 'POST'}).catch(function(){});
+        fetch('/api/stock-momentum/rescan',   {method: 'POST'}).catch(function(){});
+        fetch('/api/morning-momentum/rescan', {method: 'POST'}).catch(function(){});
+        // Trigger fundamentals background refresh (both tabs)
+        fetch('/api/fundamentals?refresh=1').catch(function(){});
+        fetch('/api/sme/fundamentals?refresh=1').catch(function(){});
 
-    setTimeout(function() {
-      btn.disabled = false;
-      btn.classList.remove('working');
-      _showForceToast('🚀',
-        'All caches cleared (incl. Screener.in HTML cache). Live download started — ' +
-        'Fundamentals/SME tabs show partial data while 750 tickers re-fetch (2–5 min). ' +
-        'Wait for "✓ all fresh" indicator before comparing results across servers.');
-      setTimeout(function() {
-        var t = document.getElementById('force-refresh-toast');
-        if (t) t.classList.remove('show');
-      }, 6000);
-    }, 2500);
-  }).catch(function(err) {
-    btn.disabled = false;
-    btn.classList.remove('working');
-    _showForceToast('❌', 'Error: ' + (err.message || String(err)));
-    setTimeout(function() {
-      var t = document.getElementById('force-refresh-toast');
-      if (t) t.classList.remove('show');
-    }, 6000);
-  });
+        // Reset swing UI so it shows "scanning" state immediately
+        _swingN5Status = 'scanning'; _swingMcStatus = 'scanning';
+        _swingUpdateUI();
+
+        setTimeout(function() {
+          btn.disabled = false;
+          btn.classList.remove('working');
+          _showForceToast('🚀',
+            'All scans stopped, caches cleared (incl. Screener.in HTML cache). ' +
+            'Live download started — Fundamentals/SME tabs show partial data while ' +
+            '750 tickers re-fetch (2–5 min). ' +
+            'Wait for "✓ all fresh" indicator before comparing results across servers.');
+          setTimeout(function() {
+            var t = document.getElementById('force-refresh-toast');
+            if (t) t.classList.remove('show');
+          }, 6000);
+        }, 2500);
+      }).catch(function(err) {
+        btn.disabled = false;
+        btn.classList.remove('working');
+        _showForceToast('❌', 'Error clearing caches: ' + (err.message || String(err)));
+        setTimeout(function() {
+          var t = document.getElementById('force-refresh-toast');
+          if (t) t.classList.remove('show');
+        }, 6000);
+      });
+    });
 }
 
 function _showForceToast(icon, msg) {

@@ -651,6 +651,56 @@ async def force_mc_rescan() -> JSONResponse:
     return JSONResponse({"triggered": True, "status": "scanning"})
 
 
+@app.post("/api/stop-all-scans")
+async def stop_all_scans() -> JSONResponse:
+    """Immediately signal all running scans and background workers to stop.
+
+    Called by the frontend *before* clearing caches so that in-flight workers
+    don't race with the clear and re-populate the just-wiped cache.
+
+    Actions taken:
+      • Fund + SME BG workers: generation is incremented (workers self-terminate
+        at the next batch boundary) AND cancel events are set.
+      • _fund_bg_running / _sme_bg_running reset to False so a fresh run can
+        start cleanly after caches are cleared.
+      • All price-scan states (swing/momentum/morning-star for both N500 and
+        MC250) are marked "idle" so pending asyncio tasks know the slot is free
+        and the UI shows a neutral state while the cache clear happens.
+    """
+    global _fund_bg_running, _sme_bg_running, _fund_generation, _sme_generation
+
+    # ── 1. Increment generations → BG thread-workers self-terminate ──────────
+    _fund_generation += 1
+    _sme_generation  += 1
+
+    # ── 2. Set cancel events (checked at every batch boundary in BG workers) ──
+    _fund_cancel.set()
+    _sme_cancel.set()
+
+    # ── 3. Reset running flags so a fresh worker can start after cache clear ──
+    _fund_bg_running = False
+    _sme_bg_running  = False
+
+    # ── 4. Mark all price-scan states as idle ─────────────────────────────────
+    for state in (scan_state, mc_scan_state,
+                  mom_scan_state, mc_mom_scan_state,
+                  ms_scan_state,  mc_ms_scan_state):
+        if state.get("status") == "scanning":
+            state["status"]     = "idle"
+            state["scan_stage"] = "Stopped — awaiting fresh scan"
+
+    logger.info(
+        "stop-all-scans: fund_gen=%d sme_gen=%d — all workers signalled to stop",
+        _fund_generation, _sme_generation,
+    )
+    return JSONResponse({
+        "stopped": True,
+        "fund_generation": _fund_generation,
+        "sme_generation":  _sme_generation,
+        "message": "All background workers signalled to stop; price scans marked idle",
+    })
+
+
 @app.get("/api/cache/stats")
 async def cache_stats() -> JSONResponse:
     return JSONResponse(_ohlcv_cache.stats())
