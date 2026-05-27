@@ -383,43 +383,71 @@ class ScreenerClient:
                         result.setdefault('cash_from_operations', non_zero[-1])
                         break
 
-                # ── 6. OPM from Profit & Loss section ────────────────────────────
-                if 'opm' not in result:
-                    pl_idx = html.find('id="profit-loss"')
-                    if pl_idx != -1:
-                        pl_chunk = html[pl_idx: pl_idx + 6000]
-                        opm_idx  = pl_chunk.find('OPM')
-                        if opm_idx != -1:
-                            opm_row_start = pl_chunk.rfind('<tr', max(0, opm_idx - 200), opm_idx)
-                            opm_row_end   = pl_chunk.find('</tr>', opm_idx)
-                            if opm_row_start != -1 and opm_row_end != -1:
-                                opm_chunk = pl_chunk[opm_row_start: opm_row_end + 5]
-                                opm_vals  = re.findall(r'<td[^>]*>\s*(-?[\d,]+(?:\.\d+)?)\s*%?\s*</td>', opm_chunk)
-                                opm_nums  = []
-                                for ov in opm_vals:
-                                    try:
-                                        opm_nums.append(float(ov.replace(',', '')))
-                                    except ValueError:
-                                        pass
-                                if opm_nums:
-                                    result.setdefault('opm', opm_nums[-1])
+                # ── 6. OPM + NPM from Profit & Loss section ──────────────────────
+                # Uses the full P&L section (up to ratios section or 70 KB).
+                # OPM is the "OPM %" row; NPM is computed as Net Profit / Sales
+                # from the last column since screener.in no longer shows NPM %.
+                _pl_end = html.find('id="ratios"')
+                pl_idx  = html.find('id="profit-loss"')
+                if pl_idx != -1:
+                    _pl_limit = (_pl_end if _pl_end > pl_idx else pl_idx + 70000)
+                    pl_chunk  = html[pl_idx: _pl_limit]
 
-                # ── 7. Net profit margin from ratios table ────────────────────────
+                    def _last_row_val(label: str) -> float | None:
+                        """Return the last numeric cell value of the P&L row with given label."""
+                        lbl_idx = pl_chunk.find(label)
+                        if lbl_idx == -1:
+                            return None
+                        rs = pl_chunk.rfind('<tr', max(0, lbl_idx - 500), lbl_idx)
+                        re_ = pl_chunk.find('</tr>', lbl_idx)
+                        if rs == -1 or re_ == -1:
+                            return None
+                        row = pl_chunk[rs: re_ + 5]
+                        nums = []
+                        for v in re.findall(
+                                r'<td[^>]*>\s*(-?[\d,]+(?:\.\d+)?)\s*%?\s*</td>',
+                                row, re.DOTALL):
+                            try:
+                                nums.append(float(v.replace(',', '')))
+                            except ValueError:
+                                pass
+                        return nums[-1] if nums else None
+
+                    if 'opm' not in result:
+                        opm_val = _last_row_val('OPM %')
+                        if opm_val is not None:
+                            result.setdefault('opm', opm_val)
+
+                    if 'net_profit_margin' not in result:
+                        # NPM = Net Profit (last year) / Sales (last year) * 100
+                        # screener.in uses &nbsp; entity in row labels (not decoded by requests)
+                        net_profit = (_last_row_val('Net Profit&nbsp;')
+                                      or _last_row_val('Net Profit\xa0')
+                                      or _last_row_val('Net Profit '))
+                        sales      = (_last_row_val('Sales&nbsp;')
+                                      or _last_row_val('Sales\xa0')
+                                      or _last_row_val('Sales '))
+                        if net_profit is not None and sales and sales > 0:
+                            result.setdefault('net_profit_margin',
+                                              round(net_profit / sales * 100, 1))
+
+                # ── 7. Net profit margin from ratios table (fallback) ─────────────
                 if 'net_profit_margin' not in result:
                     r_idx = html.find('id="ratios"')
                     if r_idx != -1:
-                        r_chunk = html[r_idx: r_idx + 8000]
-                        # NPM row labels on screener.in
+                        r_chunk = html[r_idx: r_idx + 15000]
                         for npm_label in ('Net Profit margin', 'NPM', 'Net profit margin',
-                                          'Net Profit Margin'):
+                                          'Net Profit Margin', 'Net Profit %', 'NPM %'):
                             npm_idx = r_chunk.find(npm_label)
                             if npm_idx == -1:
                                 continue
-                            npm_rs  = r_chunk.rfind('<tr', max(0, npm_idx - 200), npm_idx)
+                            npm_rs  = r_chunk.rfind('<tr', max(0, npm_idx - 500), npm_idx)
                             npm_re  = r_chunk.find('</tr>', npm_idx)
                             if npm_rs != -1 and npm_re != -1:
                                 npm_row = r_chunk[npm_rs: npm_re + 5]
-                                npm_vs  = re.findall(r'<td[^>]*>\s*(-?[\d,\.]+)\s*%?\s*</td>', npm_row)
+                                npm_vs  = re.findall(
+                                    r'<td[^>]*>\s*(-?[\d,\.]+)\s*%?\s*</td>',
+                                    npm_row, re.DOTALL)
                                 npm_ns  = []
                                 for nv in npm_vs:
                                     try:

@@ -1864,7 +1864,8 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
                   "pe_ratio", "peg_ratio", "earnings_yield",
                   "book_value", "pb_ratio", "dividend_yield",
                   "graham_number", "graham_mos", "sales_growth_avg",
-                  "current_ratio", "cash_from_operations", "cfo_yield"):  # NEW
+                  "current_ratio", "cash_from_operations", "cfo_yield",
+                  "opm", "net_profit_margin"):
             v = cache_rec.get(k)
             if v is not None:
                 rec[k] = v
@@ -2991,7 +2992,8 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
                   "pe_ratio", "peg_ratio", "earnings_yield",
                   "book_value", "pb_ratio", "dividend_yield",
                   "graham_number", "graham_mos", "sales_growth_avg",
-                  "current_ratio", "cash_from_operations", "cfo_yield"):
+                  "current_ratio", "cash_from_operations", "cfo_yield",
+                  "opm", "net_profit_margin"):
             v = cache_rec.get(k)
             if v is not None:
                 rec[k] = v
