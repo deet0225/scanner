@@ -2907,6 +2907,26 @@ class StockScanner:
                         ema50          = _ema50
                         price_vs_ema50 = (_ema50 and (cp / _ema50 - 1) * 100)
 
+                # ── Stop loss (ATR14-based structural stop) ──────────────────
+                lo_ms = df_s["Low"].reindex(c.index)
+                cl_ms = float(lo_ms.iloc[-1])
+                atr14_ms_val = None
+                stop_loss_ms = round(cp * 0.95, 2)  # 5% fallback
+                try:
+                    _atr14_s = _ta_atr(df_s, length=14)
+                    if _atr14_s is not None and not _atr14_s.dropna().empty:
+                        _av = float(_atr14_s.iloc[-1])
+                        if _av > 0 and not pd.isna(_av):
+                            atr14_ms_val = round(_av, 2)
+                            _sl_recent = float(lo_ms.iloc[-4:-1].min()) if len(lo_ms) >= 4 else cl_ms
+                            _sl_struct = max(cl_ms, _sl_recent)
+                            _sl_cand   = max(_sl_struct, cp - 1.0 * _av)
+                            stop_loss_ms = round(
+                                min(max(_sl_cand, cp - 1.5 * _av), cp - 0.5 * _av), 2
+                            )
+                except Exception:
+                    pass
+
                 # ── Stock qualifies — compute display metrics ────────────────
                 # 20-day return
                 r20 = (
@@ -3002,8 +3022,8 @@ class StockScanner:
                     "rel_vol_pct":     None,
                     "rs_ratio":        None,
                     "rs_outperf_pct":  None,
-                    "stop_loss":       None,
-                    "atr14":           None,
+                    "stop_loss":       stop_loss_ms,
+                    "atr14":           atr14_ms_val,
                     "morning_star":    True,
                     "mom_score":       star_score,
                 })

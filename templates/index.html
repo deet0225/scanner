@@ -681,6 +681,7 @@
         <th style="width:80px;">From</th>
         <th>Ticker / Name</th>
         <th>Price (&#8377;)</th>
+        <th title="Stop Loss — ATR14-based structural stop (max of candle low, 3-bar low, cp−1×ATR14) — bounded [cp−1.5×ATR, cp−0.5×ATR]">Stop&thinsp;Loss</th>
         <th title="RSI-14 daily / Weekly RSI-14">RSI&thinsp;14&thinsp;/&thinsp;W</th>
         <th title="ADX-14 — directional strength">ADX&thinsp;14</th>
         <th title="20-Day return vs benchmark index">20D&thinsp;Ret</th>
@@ -691,7 +692,7 @@
         <th title="Morning Star pattern confirmed on last 3 candles">&#127774;&thinsp;Star</th>
         <th title="Star Quality Score: Penetration(30%) + Volume Surge(25%) + Oversold RSI(25%) + Prior Decline(20%) — max 100">&#127774;&thinsp;Star Score</th>
       </tr></thead>
-      <tbody id="mmom-results-body"><tr><td colspan="13">
+      <tbody id="mmom-results-body"><tr><td colspan="14">
         <div class="empty-state">
           <i class="bi bi-sunrise fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
           Click <strong>&#127774; Morning Star</strong> tab or <strong>Refresh</strong> to load.
@@ -778,6 +779,7 @@
         <th style="width:80px;" title="Listed on NSE Emerge or BSE SME IPO platform">Exchange</th>
         <th>Ticker</th>
         <th title="Current market price">Price</th>
+        <th title="Stop Loss — ATR14-based structural stop (or 5% below price if OHLCV unavailable)">Stop&thinsp;Loss</th>
         <th>Mkt Cap</th>
         <th title="Debt-to-Equity ratio — lower is better">D/E</th>
         <th title="Return on Capital Employed · sub: ROE">ROCE %</th>
@@ -789,7 +791,7 @@
         <th title="3-Year Profit Growth CAGR · sub: TTM + 5Y · ↑ = accelerating vs 3Y">Profit 3Y</th>
         <th title="Growth-acceleration composite score (55% growth, 18% quality, 12% cash flow, 8% debt, 4% value, 3% size)">Fund Score</th>
       </tr></thead>
-      <tbody id="sme-results-body"><tr><td colspan="14">
+      <tbody id="sme-results-body"><tr><td colspan="15">
         <div class="empty-state">
           <i class="bi bi-buildings fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
           Click <strong>&#127981; SME</strong> tab or <strong>Refresh</strong> to load SME rankings.
@@ -935,6 +937,7 @@
         <th style="width:38px;">#</th>
         <th>Ticker</th>
         <th title="Current market price from NSE / Screener">Price</th>
+        <th title="Stop Loss — ATR14-based structural stop (or 5% below price if OHLCV unavailable)">Stop&thinsp;Loss</th>
         <th>Mkt Cap</th>
         <th title="Debt-to-Equity ratio — lower is better (0 = debt-free, >2 = risky)">D/E</th>
         <th title="Return on Capital Employed — capital efficiency; ROE sub-line">ROCE %</th>
@@ -946,7 +949,7 @@
         <th title="3-Year Profit Growth CAGR; 10Y sub-line">Profit 3Y</th>
         <th title="Composite fundamental quality score (12 factors: ROCE, ROE, D/E, CFO, Growth, PEG, Graham MOS, Promoter, Inst%, EY, MCap, Div)">Fund Score</th>
       </tr></thead>
-      <tbody id="fund-results-body"><tr><td colspan="13">
+      <tbody id="fund-results-body"><tr><td colspan="14">
         <div class="empty-state">
           <i class="bi bi-gem fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
           Click <strong>&#128142; Fundamentals</strong> tab or <strong>Refresh</strong> to load rankings.
@@ -2105,7 +2108,7 @@ function renderMorningMom(stocks, meta) {
         'No Morning Star patterns found in any of the 750 tickers' +
         (asOf ? ' for ' + asOf : ' today') + '.<br>' +
         '<small style="color:var(--text-muted);">The Morning Star is a rare 3-candle reversal &mdash; try a different date or check back after the next session.</small>';
-    tbody.innerHTML = '<tr><td colspan="13"><div class="empty-state">' + msg + '</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' + msg + '</div></td></tr>';
     return;
   }
 
@@ -2211,10 +2214,16 @@ function renderMorningMom(stocks, meta) {
       '<td>' +
         '<div class="ticker-sym">' + ticker + '</div>' +
         '<div class="company-name">' + (s.name || '') + '</div>' +
-        (s.stop_loss != null ? '<div class="sl-sub">SL:&#8377;' + Number(s.stop_loss).toLocaleString('en-IN') + '</div>' : '') +
         candleDateCellMm +
       '</td>' +
       '<td>' + priceStr + '</td>' +
+      '<td>' + (s.stop_loss != null
+        ? '<span class="sl-val">&#8377;' + Number(s.stop_loss).toLocaleString('en-IN', {maximumFractionDigits: 2}) + '</span>' +
+          (s.atr14 != null ? '<div class="sl-sub">ATR14:' + Number(s.atr14).toFixed(2) + '</div>' : '') +
+          (s.price != null && s.stop_loss != null
+            ? '<div class="sl-sub">' + (((s.price - s.stop_loss) / s.price) * 100).toFixed(1) + '% risk</div>'
+            : '')
+        : '<span style="color:var(--text-muted);">--</span>') + '</td>' +
       '<td>' + rsiCell  + '</td>' +
       '<td>' + adxCell  + '</td>' +
       '<td>' + r20Cell  + '</td>' +
@@ -2873,7 +2882,7 @@ function fundLoad(force, _retries) {
   // Only blank the table on explicit force-refresh; silent polls keep existing rows visible
   if (force && _retries === 0) {
     document.getElementById('fund-results-body').innerHTML =
-      '<tr><td colspan="13"><div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2"></i>Loading…</div></td></tr>';
+      '<tr><td colspan="14"><div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2"></i>Loading…</div></td></tr>';
   }
 
   // Clear any outstanding poll timer so we don't stack timers
@@ -2964,7 +2973,7 @@ function _fundGrade(score) {
 function renderFundamentals(stocks) {
   var tbody = document.getElementById('fund-results-body');
   if (!stocks || !stocks.length) {
-    tbody.innerHTML = '<tr><td colspan="13"><div class="empty-state">' +
+    tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' +
       '<i class="bi bi-gem fs-2 d-block mb-2"></i>' +
       '<strong>Downloading fundamental data…</strong><br>' +
       '<small style="color:var(--text-muted);">Progress bar above shows download status.<br>' +
@@ -2982,6 +2991,15 @@ function renderFundamentals(stocks) {
     var cp  = s.current_price || s.price;
     var cpStr = cp != null
       ? '<span style="font-family:monospace;font-weight:700;">&#8377;' + Number(cp).toLocaleString('en-IN', {maximumFractionDigits:1}) + '</span>'
+      : '<span style="color:var(--text-muted);">--</span>';
+
+    // Stop Loss
+    var slStr = s.stop_loss != null
+      ? '<span class="sl-val">&#8377;' + Number(s.stop_loss).toLocaleString('en-IN', {maximumFractionDigits: 2}) + '</span>' +
+        (s.atr14 != null ? '<div class="sl-sub">ATR14:' + Number(s.atr14).toFixed(2) + '</div>' : '') +
+        (cp != null && s.stop_loss != null
+          ? '<div class="sl-sub">' + (((Number(cp) - s.stop_loss) / Number(cp)) * 100).toFixed(1) + '% risk</div>'
+          : '')
       : '<span style="color:var(--text-muted);">--</span>';
 
     // Market cap
@@ -3082,6 +3100,7 @@ function renderFundamentals(stocks) {
         (s.dividend_yield ? '<div class="sector-sub" style="color:var(--green)">Div:' + Number(s.dividend_yield).toFixed(2) + '%</div>' : '') +
       '</td>' +
       '<td style="font-size:0.82rem; white-space:nowrap;">' + cpStr + '</td>' +
+      '<td>' + slStr + '</td>' +
       '<td style="font-size:0.78rem;">' + mcStr + '</td>' +
       '<td>' + deStr + '</td>' +
       '<td>' + roceStr + '</td>' +
