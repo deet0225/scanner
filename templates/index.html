@@ -2798,7 +2798,7 @@ function renderSectors(j) {
     var rsiCol = rsi9 >= 75 ? 'var(--red)' : rsi9 >= 55 ? 'var(--green)' : 'var(--text-muted)';
     var macdCol = (s.macd_hist_pct||0) >= 0 ? 'var(--green)' : 'var(--red)';
     var macdIcon = (s.macd_hist_pct||0) >= 0 ? '&#9650;' : '&#9660;';
-    return '<div class="sec-tile" style="background:' + bg + ';cursor:pointer;" onclick="openSectorDrilldown(' + JSON.stringify(s.sector) + ')">' +
+    return '<div class="sec-tile" style="background:' + bg + ';cursor:pointer;" onclick="openSectorDrilldown(\'' + (s.sector||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'") + '\')">' +
       medal +
       '<span class="sec-tile-rank">#' + rank + '</span>' +
       '<div class="sec-tile-bar"><div class="sec-tile-bar-fill" style="width:' + barW + '%;background:' + r5c + ';"></div></div>' +
@@ -2832,7 +2832,7 @@ function renderSectors(j) {
     var macdStr = s.macd_hist_pct != null
       ? '<span style="color:' + macdCol + ';">' + (s.macd_hist_pct>=0?'+':'') + Number(s.macd_hist_pct).toFixed(3) + '%</span>'
       : '--';
-    return '<tr style="cursor:pointer;" onclick="openSectorDrilldown(' + JSON.stringify(s.sector) + ')">' +
+    return '<tr style="cursor:pointer;" onclick="openSectorDrilldown(\'' + (s.sector||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'") + '\')">' +
       '<td><div class="rank-badge ' + rkCls + ' mx-auto">' + rank + '</div></td>' +
       '<td><strong>' + s.sector + '</strong>' +
         (s.stock_count ? '<div style="font-size:0.63rem;color:var(--text-muted);">' + s.stock_count + ' stocks</div>' : '') +
