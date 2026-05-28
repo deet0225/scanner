@@ -76,6 +76,23 @@ import requests
 import yfinance as yf
 import ta as _ta_lib  # pure-Python TA library (pandas_ta replacement, supports Python 3.14)
 
+# ---------------------------------------------------------------------------
+# IST date helper  (see cache.py for detailed rationale)
+# ---------------------------------------------------------------------------
+_IST_OFFSET = dt_mod.timezone(dt_mod.timedelta(hours=5, minutes=30))
+
+
+def _ist_today() -> dt_mod.date:
+    """Return today's date in IST (UTC+5:30), not the system-local timezone.
+
+    Using dt_mod.date.today() on a UTC server (Render/cloud) returns the UTC
+    date which can differ from IST by one calendar day between midnight UTC
+    and 05:30 UTC (= IST midnight to 11:00 IST).  NSE data is always dated
+    in IST, so all comparisons against candle dates must use the IST date to
+    produce identical results on both local and remote environments.
+    """
+    return dt_mod.datetime.now(_IST_OFFSET).date()
+
 # No-op context manager — kept so call sites need no changes
 @contextlib.contextmanager
 def _suppress_ta_stdout():
@@ -448,7 +465,7 @@ class _BSEBhavcopy:
         Tries up to `lookback` non-weekend days going backwards from anchor.
         Stops immediately on first success to avoid unnecessary network trips.
         """
-        anchor = target_date if target_date else dt_mod.date.today()
+        anchor = target_date if target_date else _ist_today()
         offset, tries = 0, 0
         while tries < lookback and offset < lookback + 4:
             check = anchor - dt_mod.timedelta(days=offset)
@@ -516,7 +533,7 @@ class StockScanner:
                 end_dt = end_date if isinstance(end_date, dt_mod.date) \
                          else dt_mod.date.fromisoformat(str(end_date))
             else:
-                end_dt = dt_mod.date.today()
+                end_dt = _ist_today()   # IST date — consistent across UTC/local servers
             start_dt = end_dt - dt_mod.timedelta(days=days + 60)
 
             period1 = int(dt_mod.datetime.combine(start_dt, dt_mod.time.min).timestamp())
@@ -2830,7 +2847,7 @@ class StockScanner:
             return []
 
         # ── Step 2: Apply Morning Star + quality filters ────────────────────
-        scan_date = target_date or dt_mod.date.today()
+        scan_date = target_date or _ist_today()   # IST date — avoids UTC vs IST discrepancy
         _progress("Checking Morning Star pattern (%d tickers)..." % len(all_data))
 
         results:   list = []

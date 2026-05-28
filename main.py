@@ -85,6 +85,17 @@ logger = logging.getLogger(__name__)
 
 IST = pytz.timezone("Asia/Kolkata")
 
+
+def _ist_today() -> DateType:
+    """Return today's date in IST (UTC+5:30) regardless of server timezone.
+
+    `datetime.date.today()` returns the system-local date which on a UTC server
+    (Render) can be one calendar day behind IST.  All date validations and scan
+    comparisons must use IST so that results are identical on both local and
+    remote deployments.
+    """
+    return datetime.now(IST).date()
+
 scanner = StockScanner(
     tickers=NIFTY500_TICKERS,
     benchmark_ticker=None,
@@ -519,7 +530,7 @@ def _validate_date_param(date: str):
         target = DateType.fromisoformat(date)
     except ValueError:
         return None, JSONResponse({"error": "Invalid date format  -  use YYYY-MM-DD"}, status_code=400)
-    today = DateType.today()
+    today = _ist_today()   # IST date — avoids UTC vs IST mismatch on Render
     if target > today:
         return None, JSONResponse({"error": "Date cannot be in the future"}, status_code=400)
     min_date = today.replace(year=today.year - 3)

@@ -34,6 +34,27 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# IST date helper
+# All NSE market data uses Indian Standard Time (IST = UTC+5:30).
+# Using the system-local date (datetime.date.today()) causes different cache
+# staleness decisions on UTC servers (e.g. Render) vs local IST machines,
+# producing different scan results across environments.
+# _ist_today() always returns the current date in IST, irrespective of the
+# server's system timezone — eliminating the Render vs local data discrepancy.
+# ---------------------------------------------------------------------------
+_IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+
+
+def _ist_today() -> datetime.date:
+    """Return today's date in IST (Indian Standard Time = UTC+5:30).
+
+    Use this instead of datetime.date.today() everywhere dates are compared
+    against NSE OHLCV candle dates to ensure consistent behaviour on both
+    UTC-timezone servers (Render) and local IST machines.
+    """
+    return datetime.datetime.now(_IST_OFFSET).date()
+
 # ── Cache location ────────────────────────────────────────────────────────────
 _BASE_DIR = os.path.join(os.path.dirname(__file__), "cache", "ohlcv")
 
@@ -115,7 +136,7 @@ def is_fresh(df: "pd.DataFrame") -> bool:
     try:
         last = df.index[-1]
         last_date = last.date() if hasattr(last, "date") else last
-        today     = datetime.date.today()
+        today     = _ist_today()   # IST date — consistent across UTC/local servers
         delta     = (today - last_date).days
         weekday   = today.weekday()   # 0=Mon … 6=Sun
 

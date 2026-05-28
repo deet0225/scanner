@@ -47,6 +47,16 @@ warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# IST date helper  (see cache.py for detailed rationale)
+# ---------------------------------------------------------------------------
+_IST_OFFSET = dt_mod.timezone(dt_mod.timedelta(hours=5, minutes=30))
+
+
+def _ist_today() -> dt_mod.date:
+    """Return today's date in IST (UTC+5:30) regardless of server timezone."""
+    return dt_mod.datetime.now(_IST_OFFSET).date()
+
+# ---------------------------------------------------------------------------
 # Shared SSL-bypass session  (corporate proxy safe)
 # ---------------------------------------------------------------------------
 ssl._create_default_https_context = ssl._create_unverified_context  # type: ignore[attr-defined]
@@ -1025,7 +1035,7 @@ class NSEPythonHistClient:
 
         ed = (end_date if isinstance(end_date, dt_mod.date)
               else (dt_mod.date.fromisoformat(str(end_date))
-                    if end_date else dt_mod.date.today()))
+                    if end_date else _ist_today()))   # IST date — avoids UTC vs IST skew
         sd = ed - dt_mod.timedelta(days=days + 10)
 
         cache_key = f"{sym}_{sd}_{ed}"
