@@ -225,6 +225,18 @@ mc_ms_scan_state: dict = {
     "total_tickers":  len(scanner_mc.tickers),
     "scan_stage":     "",
 }
+def _enrich_with_industry(stocks: list) -> None:
+    """Inject 'sector' and 'industry' from _fund_data into each stock dict (in-place).
+    Best-effort — silently skips tickers not yet in the fundamentals cache."""
+    for s in stocks:
+        sym  = s.get("display_ticker") or (s.get("ticker") or "").replace(".NS", "")
+        fund = _fund_data.get(sym) or _fund_data.get(sym + ".NS") or {}
+        if fund.get("sector") and not s.get("sector"):
+            s["sector"] = fund["sector"]
+        if fund.get("industry") and not s.get("industry"):
+            s["industry"] = fund["industry"]
+
+
 async def _do_run_generic_scan(sc: StockScanner, state: dict, label: str) -> None:
     """Inner scan body  -  must be called while _scan_lock is held.
     Works for both Nifty500 and Microcap250 scanners."""
@@ -234,6 +246,7 @@ async def _do_run_generic_scan(sc: StockScanner, state: dict, label: str) -> Non
     try:
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(None, lambda: sc.scan(progress_cb=_progress))
+        _enrich_with_industry(results)   # inject sector/industry from fundamentals cache
 
         now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
         state.update({
