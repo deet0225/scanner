@@ -689,10 +689,9 @@
         <th title="Volume Z-score / Relative Volume Percentile">Vol&thinsp;Z&thinsp;/&thinsp;RVPct</th>
         <th title="% vs EMA-20 / EMA-20 vs EMA-50">EMA&thinsp;20/50</th>
         <th title="Sector">Sector</th>
-        <th title="Morning Star pattern confirmed on last 3 candles">&#127774;&thinsp;Star</th>
         <th title="Star Quality Score: Penetration(30%) + Volume Surge(25%) + Oversold RSI(25%) + Prior Decline(20%) — max 100">&#127774;&thinsp;Star Score</th>
       </tr></thead>
-      <tbody id="mmom-results-body"><tr><td colspan="14">
+      <tbody id="mmom-results-body"><tr><td colspan="13">
         <div class="empty-state">
           <i class="bi bi-sunrise fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
           Click <strong>&#127774; Morning Star</strong> tab or <strong>Refresh</strong> to load.
@@ -2231,7 +2230,6 @@ function renderMorningMom(stocks, meta) {
       '<td>' + volCell  + '</td>' +
       '<td>' + emaCell  + '</td>' +
       '<td>' + secCell  + '</td>' +
-      '<td style="text-align:center;">' + starCell + '</td>' +
       '<td>' + msCell   + '</td>' +
       '</tr>';
   }).join('');
