@@ -2846,6 +2846,37 @@ class StockScanner:
         if not all_data:
             return []
 
+        # ── Step 1b: Load benchmark close series for RS calculation (cache-only) ─
+        bench_c_ms = None
+        for _bt in ([self.benchmark_ticker] + list(self.benchmark_etf_fallbacks or [])):
+            _bdf = _cache.load(_bt)
+            if _bdf is not None and not _bdf.empty:
+                _bc = _bdf["Close"].dropna()
+                if len(_bc) > SECTOR_LOOKBACK_DAYS:
+                    bench_c_ms = _bc
+                    break
+
+        # ── Step 1c: Synthetic benchmark fallback ────────────────────────────
+        # When no benchmark index PKL file exists in cache/ohlcv (e.g. fresh
+        # deployment or after a full cache clear), build an equal-weight
+        # synthetic market proxy from the median-normalised close of all
+        # downloaded stocks.  This ensures the "RS vs Idx" column is always
+        # populated rather than showing empty values.
+        if bench_c_ms is None and all_data:
+            _progress("Building synthetic benchmark for RS (no index cache)...")
+            _norm_closes = []
+            for _df_s in all_data.values():
+                _c_s = _df_s["Close"].dropna()
+                if len(_c_s) > SECTOR_LOOKBACK_DAYS + 1 and float(_c_s.iloc[0]) > 0:
+                    _norm_closes.append(_c_s / float(_c_s.iloc[0]))
+            if _norm_closes:
+                _combined_s  = pd.concat(_norm_closes, axis=1).ffill().bfill()
+                bench_c_ms   = _combined_s.median(axis=1).dropna()
+                logger.info(
+                    "%s Synthetic benchmark built from %d stocks for RS calculation",
+                    lbl, len(_norm_closes),
+                )
+
         # ── Step 2: Apply Morning Star + quality filters ────────────────────
         scan_date = target_date or _ist_today()   # IST date — avoids UTC vs IST discrepancy
         _progress("Checking Morning Star pattern (%d tickers)..." % len(all_data))
@@ -2979,6 +3010,56 @@ class StockScanner:
                     if wstd > 0:
                         vol_zscore = round((cur_vol - float(w.mean())) / wstd, 2)
 
+                # ── Weekly RSI-14 ─────────────────────────────────────────────
+                w_rsi_val = None
+                try:
+                    weekly_ms = (
+                        df_s.resample("W-FRI")
+                            .agg({"Open": "first", "High": "max", "Low": "min",
+                                  "Close": "last", "Volume": "sum"})
+                            .dropna(subset=["Close"])
+                    )
+                    if len(weekly_ms) >= 15:
+                        w_rsi_s = self._rsi(weekly_ms["Close"], 14)
+                        if not w_rsi_s.dropna().empty:
+                            w_rsi_val = round(float(w_rsi_s.iloc[-1]), 2)
+                except Exception:
+                    pass
+
+                # ── ADX-14, +DI, -DI ─────────────────────────────────────────
+                adx_val = pdi_val = ndi_val = None
+                try:
+                    with _suppress_ta_stdout():
+                        adx_res = _ta_adx(df_s, length=ADX_PERIOD)
+                    if adx_res is not None and not adx_res.empty:
+                        adx_col = "ADX_%d" % ADX_PERIOD
+                        pdi_col = "DMP_%d" % ADX_PERIOD
+                        ndi_col = "DMN_%d" % ADX_PERIOD
+                        if all(c_ in adx_res.columns for c_ in (adx_col, pdi_col, ndi_col)):
+                            _av = float(adx_res[adx_col].iloc[-1])
+                            _pv = float(adx_res[pdi_col].iloc[-1])
+                            _nv = float(adx_res[ndi_col].iloc[-1])
+                            if not pd.isna(_av):
+                                adx_val = round(_av, 2)
+                                pdi_val = round(_pv, 2)
+                                ndi_val = round(_nv, 2)
+                except Exception:
+                    pass
+
+                # ── RS vs benchmark ───────────────────────────────────────────
+                rs_ratio_val   = None
+                rs_outperf_val = None
+                if bench_c_ms is not None and len(c) > SECTOR_LOOKBACK_DAYS:
+                    try:
+                        bc_ms = bench_c_ms[bench_c_ms.index <= c.index[-1]]
+                        if len(bc_ms) > SECTOR_LOOKBACK_DAYS:
+                            stk_ret = float(c.iloc[-1] / c.iloc[-(SECTOR_LOOKBACK_DAYS + 1)] - 1)
+                            idx_ret = float(bc_ms.iloc[-1] / bc_ms.iloc[-(SECTOR_LOOKBACK_DAYS + 1)] - 1)
+                            rs_ratio_val   = round((1 + stk_ret) / (1 + idx_ret), 4)
+                            rs_outperf_val = round((stk_ret - idx_ret) * 100, 2)
+                    except Exception:
+                        pass
+
                 # ── Star Quality Score (0-100) ───────────────────────────────
                 # 4 components (weights sum to 1.0):
                 #   penetration (0.30) — 50%→0  to 100%+→100  (full engulf = 100)
@@ -3029,16 +3110,16 @@ class StockScanner:
                     "return_3m":       r3m,
                     "avg_tv_20d_cr":   round(avg_tv_20d / 1e7, 2),
                     "rsi":             rsi_val,
-                    "weekly_rsi":      None,
-                    "adx":             None,
-                    "pdi":             None,
-                    "ndi":             None,
+                    "weekly_rsi":      w_rsi_val,
+                    "adx":             adx_val,
+                    "pdi":             pdi_val,
+                    "ndi":             ndi_val,
                     "price_vs_ema20":  price_vs_ema20,
                     "ema20_vs_50":     ema20_vs_50,
                     "vol_zscore":      vol_zscore,
                     "rel_vol_pct":     None,
-                    "rs_ratio":        None,
-                    "rs_outperf_pct":  None,
+                    "rs_ratio":        rs_ratio_val,
+                    "rs_outperf_pct":  rs_outperf_val,
                     "stop_loss":       stop_loss_ms,
                     "atr14":           atr14_ms_val,
                     "morning_star":    True,

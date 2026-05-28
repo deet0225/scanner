@@ -212,10 +212,13 @@ class ScreenerClient:
 
                 # ── 0. Sector / Industry classification (company header breadcrumb) ─────
                 # Screener.in shows: <a href="/screen/...">Sector</a> &raquo; <a href="/screen/...">Industry</a>
+                # OR (newer layout):  <a href="/screen/...">Sector</a> / <a href="/screen/...">Industry</a>
                 # This breadcrumb appears near the top of the page body.
+                # The separator between the two links can be &raquo;, /, or any HTML element (e.g. <span>/</span>)
+                # so we accept any non-link HTML/text between the two consecutive /screen links.
                 _cls = re.search(
                     r'<a[^>]+href="/screen[^"]*"[^>]*>\s*([A-Za-z][^<]{2,60}?)\s*</a>'
-                    r'[^<]*(?:&raquo;|&rsaquo;|&#8250;|»|›)[^<]*'
+                    r'(?:[^<]|<(?!/?a\b)[^>]+>){0,200}'
                     r'<a[^>]+href="/screen[^"]*"[^>]*>\s*([^<]{2,80}?)\s*</a>',
                     html[:8000],
                     re.IGNORECASE | re.DOTALL,

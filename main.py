@@ -3321,18 +3321,7 @@ async def get_morning_momentum(
     all_stocks = n500_all + mc_all
 
     # Enrich with sector/industry: static map first, live _fund_data overrides
-    for s in all_stocks:
-        sym = s.get("display_ticker") or (s.get("ticker") or "").replace(".NS", "")
-        static = _SECTOR_MAP.get(sym, {})
-        if static.get("sector") and not s.get("sector"):
-            s["sector"] = static["sector"]
-        if static.get("industry") and not s.get("industry"):
-            s["industry"] = static["industry"]
-        fund = _fund_data.get(sym) or _fund_data.get(sym + ".NS") or {}
-        if fund.get("sector"):
-            s["sector"] = fund["sector"]
-        if fund.get("industry"):
-            s["industry"] = fund["industry"]
+    _enrich_with_industry(all_stocks)
 
     # Sort by Morning Star score desc (best candidates first), then 20D return as tiebreaker
     all_stocks.sort(key=lambda x: (x.get("mom_score") or 0, x.get("return_20d") or 0), reverse=True)
@@ -3599,6 +3588,7 @@ async def historical_snapshot(
     try:
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(None, lambda: scanner.scan(target_date=target))
+        _enrich_with_industry(results)   # inject sector/industry (same as live scan)
         return JSONResponse({
             "data": results, "date": date,
             "filters_passed": len(results),
