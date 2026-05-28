@@ -2212,7 +2212,7 @@ function renderMorningMom(stocks, meta) {
       fromCell +
       '<td>' +
         '<div class="ticker-sym">' + ticker + '</div>' +
-        '<div class="company-name">' + (s.name || '') + '</div>' +
+        (s.industry ? '<div class="company-name">' + s.industry + '</div>' : '') +
         candleDateCellMm +
       '</td>' +
       '<td>' + priceStr + '</td>' +

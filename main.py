@@ -3000,12 +3000,14 @@ async def get_morning_momentum(
 
     all_stocks = n500_all + mc_all
 
-    # Enrich with sector from fundamentals cache (best-effort — no blocking call)
+    # Enrich with sector/industry from fundamentals cache (best-effort — no blocking call)
     for s in all_stocks:
         sym = s.get("display_ticker") or (s.get("ticker") or "").replace(".NS", "")
         fund = _fund_data.get(sym) or _fund_data.get(sym + ".NS") or {}
         if fund.get("sector"):
             s["sector"] = fund["sector"]
+        if fund.get("industry"):
+            s["industry"] = fund["industry"]
 
     # Sort by Morning Star score desc (best candidates first), then 20D return as tiebreaker
     all_stocks.sort(key=lambda x: (x.get("mom_score") or 0, x.get("return_20d") or 0), reverse=True)
