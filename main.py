@@ -236,12 +236,18 @@ def _enrich_with_industry(stocks: list) -> None:
     Best-effort — silently skips tickers not found in either source."""
     for s in stocks:
         sym  = s.get("display_ticker") or (s.get("ticker") or "").replace(".NS", "")
+        # Treat "Unknown" / "" as missing so the static map can fill it in
+        cur_sector   = s.get("sector")   or ""
+        cur_industry = s.get("industry") or ""
+        if cur_sector   in ("Unknown", ""):  cur_sector   = ""
+        if cur_industry in ("Unknown", ""):  cur_industry = ""
+
         # 1. Static map — always available, covers all Nifty500 + Microcap250
         static = _SECTOR_MAP.get(sym, {})
-        if static.get("sector") and not s.get("sector"):
-            s["sector"] = static["sector"]
-        if static.get("industry") and not s.get("industry"):
-            s["industry"] = static["industry"]
+        if static.get("sector")   and not cur_sector:
+            s["sector"]   = static["sector"];   cur_sector   = static["sector"]
+        if static.get("industry") and not cur_industry:
+            s["industry"] = static["industry"]; cur_industry = static["industry"]
         # 2. Live fundamentals cache — overrides static map when populated
         fund = _fund_data.get(sym) or _fund_data.get(sym + ".NS") or {}
         if fund.get("sector"):

@@ -2172,7 +2172,7 @@ class StockScanner:
             "stop_loss":      stop_loss,
             "sl_risk_pct":    sl_risk,
             "atr14":          round(atr14_v, 2),
-            "sector":         sector or "Unknown",
+            "sector":         sector or None,
             "market_cap_cr":  round(mc / 1e7, 0) if mc else None,
             "debt_equity":    round(de / 100, 2) if de and not pd.isna(de) else None,
             "rs_ratio":       round(rs_ratio, 4) if rs_ratio else None,
@@ -2621,7 +2621,7 @@ class StockScanner:
                         rej_de.append("%s (D/E %.2f)" % (sym, de / 100))
                         continue
 
-                stock["sector"]        = sector or "Unknown"
+                stock["sector"]        = sector or None
                 stock["debt_equity"]   = round(de / 100, 2) if de is not None and not pd.isna(de) else None
                 stock["market_cap_cr"] = round(mc / 1e7, 0) if mc is not None and not pd.isna(mc) else None
                 ok.append(stock)
