@@ -1424,7 +1424,7 @@ function _buildSwingRow(s, rank, withFrom) {
     fromCell +
     '<td>' +
       '<div class="ticker-sym">' + ticker + '</div>' +
-      (s.industry ? '<div class="company-name">' + s.industry + '</div>' : '') +
+      ((s.industry || s.sector) ? '<div class="company-name">' + (s.industry || s.sector) + '</div>' : '') +
       (r3m != null ? '<div class="sector-sub">3M:<span class="' + (r3m>=0?'vs-sector-pos':'vs-sector-neg') + '">' + fmtPct(r3m) + '</span></div>' : '') +
     '</td>' +
     '<td class="price-val">&#8377;' + Number(s.price).toLocaleString('en-IN') + '</td>' +
@@ -1956,7 +1956,7 @@ function renderMomentum(stocks, meta) {
       fromCell +
       '<td>' +
         '<div class="ticker-sym">' + ticker + '</div>' +
-        (s.industry ? '<div class="company-name">' + s.industry + '</div>' : '') +
+        ((s.industry || s.sector) ? '<div class="company-name">' + (s.industry || s.sector) + '</div>' : '') +
       '</td>' +
       '<td>' + priceStr + '</td>' +
       '<td>' + slCell   + '</td>' +
@@ -2211,7 +2211,7 @@ function renderMorningMom(stocks, meta) {
       fromCell +
       '<td>' +
         '<div class="ticker-sym">' + ticker + '</div>' +
-        (s.industry ? '<div class="company-name">' + s.industry + '</div>' : '') +
+        ((s.industry || s.sector) ? '<div class="company-name">' + (s.industry || s.sector) + '</div>' : '') +
       '</td>' +
       '<td>' + priceStr + '</td>' +
       '<td>' + (s.stop_loss != null
