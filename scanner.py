@@ -536,8 +536,16 @@ class StockScanner:
                 end_dt = _ist_today()   # IST date — consistent across UTC/local servers
             start_dt = end_dt - dt_mod.timedelta(days=days + 60)
 
-            period1 = int(dt_mod.datetime.combine(start_dt, dt_mod.time.min).timestamp())
-            period2 = int(dt_mod.datetime.combine(end_dt, dt_mod.time(23, 59, 59)).timestamp())
+            # Use IST-aware datetimes so period1/period2 produce identical Unix timestamps
+            # on both UTC servers (Render) and local IST machines.  Without the tzinfo
+            # argument, datetime.timestamp() uses the system-local timezone, giving
+            # different boundaries on UTC vs IST hosts and causing subtle data differences
+            # that manifest most visibly in the Morning Star tab (last-3-candle pattern).
+            _IST_TZ = dt_mod.timezone(dt_mod.timedelta(hours=5, minutes=30))
+            period1 = int(dt_mod.datetime.combine(start_dt, dt_mod.time.min,
+                                                   _IST_TZ).timestamp())
+            period2 = int(dt_mod.datetime.combine(end_dt, dt_mod.time(23, 59, 59),
+                                                   _IST_TZ).timestamp())
 
             url = (
                 f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
