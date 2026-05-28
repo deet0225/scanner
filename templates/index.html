@@ -1928,28 +1928,6 @@ function renderMomentum(stocks, meta) {
 
     var ticker = s.display_ticker || (s.ticker || '').replace('.NS','');
 
-    // Candle-date indicator — show the actual last-bar date and flag staleness
-    var filterDate = document.getElementById('mom-date').value;   // '' for live
-    var candleDate = s.candle_date || null;
-    var candleDateCell = '';
-    if (candleDate) {
-      var cdLabel = candleDate;
-      var cdStyle = 'color:var(--text-muted);font-size:0.68rem;';
-      if (filterDate && filterDate !== candleDate) {
-        // Candle is not exactly on the filter date — compute day gap
-        var fd   = new Date(filterDate);
-        var cd   = new Date(candleDate);
-        var gapDays = Math.round((fd - cd) / 86400000);
-        if (gapDays > 3) {
-          cdStyle = 'color:var(--red);font-size:0.68rem;font-weight:700;';
-          cdLabel = '⚠ ' + candleDate + ' (−' + gapDays + 'd)';
-        } else if (gapDays > 0) {
-          cdStyle = 'color:var(--yellow);font-size:0.68rem;';
-          cdLabel = candleDate + ' (−' + gapDays + 'd)';
-        }
-      }
-      candleDateCell = '<div style="' + cdStyle + '">' + cdLabel + '</div>';
-    }
 
     return '<tr>' +
       '<td><div class="rank-badge ' + rkCls + ' mx-auto">' + rankLbl + '</div></td>' +
@@ -2167,11 +2145,6 @@ function renderMorningMom(stocks, meta) {
 
     var secCell     = '<span class="badge sec-badge bg-' + sectorColor(s.sector) + '">' + (s.sector || '--') + '</span>';
 
-    // Morning Star confirmation badge
-    var starCell = s.morning_star
-      ? '<span style="font-size:1.1rem;" title="Morning Star pattern detected">&#127774;</span>' +
-        '<div style="font-size:0.65rem;color:var(--yellow);">Confirmed</div>'
-      : '<span style="color:var(--text-muted);">&#8211;</span>';
 
     // Star Quality Score (0-100: Penetration 30% + Vol Surge 25% + Oversold RSI 25% + Prior Decline 20%)
     var ss    = s.mom_score != null ? Number(s.mom_score) : 0;
@@ -2184,27 +2157,6 @@ function renderMorningMom(stocks, meta) {
 
     var ticker = s.display_ticker || (s.ticker || '').replace('.NS','');
 
-    // Candle-date indicator
-    var filterDateMm = document.getElementById('mmom-date').value;
-    var candleDateMm = s.candle_date || null;
-    var candleDateCellMm = '';
-    if (candleDateMm) {
-      var cdLabelMm = candleDateMm;
-      var cdStyleMm = 'color:var(--text-muted);font-size:0.68rem;';
-      if (filterDateMm && filterDateMm !== candleDateMm) {
-        var fdMm   = new Date(filterDateMm);
-        var cdMm   = new Date(candleDateMm);
-        var gapDaysMm = Math.round((fdMm - cdMm) / 86400000);
-        if (gapDaysMm > 3) {
-          cdStyleMm = 'color:var(--red);font-size:0.68rem;font-weight:700;';
-          cdLabelMm = '⚠ ' + candleDateMm + ' (−' + gapDaysMm + 'd)';
-        } else if (gapDaysMm > 0) {
-          cdStyleMm = 'color:var(--yellow);font-size:0.68rem;';
-          cdLabelMm = candleDateMm + ' (−' + gapDaysMm + 'd)';
-        }
-      }
-      candleDateCellMm = '<div style="' + cdStyleMm + '">' + cdLabelMm + '</div>';
-    }
 
     return '<tr>' +
       '<td><div class="rank-badge ' + rkCls + ' mx-auto">' + rankLbl + '</div></td>' +

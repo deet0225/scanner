@@ -53,6 +53,10 @@ from scanner import (
 )
 from tickers import NIFTY500_TICKERS, NIFTY_MICROCAP250_TICKERS
 import cache as _ohlcv_cache
+try:
+    from sector_map import SECTOR_MAP as _SECTOR_MAP
+except ImportError:
+    _SECTOR_MAP: dict = {}
 
 # -- Logging ------------------------------------------------------------------
 # Force UTF-8 on Windows console so log messages render correctly
@@ -226,14 +230,23 @@ mc_ms_scan_state: dict = {
     "scan_stage":     "",
 }
 def _enrich_with_industry(stocks: list) -> None:
-    """Inject 'sector' and 'industry' from _fund_data into each stock dict (in-place).
-    Best-effort — silently skips tickers not yet in the fundamentals cache."""
+    """Inject 'sector' and 'industry' from the static SECTOR_MAP (always available)
+    and from _fund_data (live fundamentals cache, populated lazily).
+    _fund_data values override the static map so live data is always preferred.
+    Best-effort — silently skips tickers not found in either source."""
     for s in stocks:
         sym  = s.get("display_ticker") or (s.get("ticker") or "").replace(".NS", "")
+        # 1. Static map — always available, covers all Nifty500 + Microcap250
+        static = _SECTOR_MAP.get(sym, {})
+        if static.get("sector") and not s.get("sector"):
+            s["sector"] = static["sector"]
+        if static.get("industry") and not s.get("industry"):
+            s["industry"] = static["industry"]
+        # 2. Live fundamentals cache — overrides static map when populated
         fund = _fund_data.get(sym) or _fund_data.get(sym + ".NS") or {}
-        if fund.get("sector") and not s.get("sector"):
+        if fund.get("sector"):
             s["sector"] = fund["sector"]
-        if fund.get("industry") and not s.get("industry"):
+        if fund.get("industry"):
             s["industry"] = fund["industry"]
 
 
@@ -2906,8 +2919,13 @@ async def get_stock_momentum(
     # Compute momentum score and sort
     for s in all_stocks:
         s["mom_score"] = _mom_score(s)
-        # Enrich with sector/industry from fundamentals cache (best-effort — no blocking call)
+        # Enrich sector/industry: static map first, live _fund_data overrides
         sym = s.get("display_ticker") or (s.get("ticker") or "").replace(".NS", "")
+        static = _SECTOR_MAP.get(sym, {})
+        if static.get("sector") and not s.get("sector"):
+            s["sector"] = static["sector"]
+        if static.get("industry") and not s.get("industry"):
+            s["industry"] = static["industry"]
         fund = _fund_data.get(sym) or _fund_data.get(sym + ".NS") or {}
         if fund.get("sector"):
             s["sector"] = fund["sector"]
@@ -3013,9 +3031,14 @@ async def get_morning_momentum(
 
     all_stocks = n500_all + mc_all
 
-    # Enrich with sector/industry from fundamentals cache (best-effort — no blocking call)
+    # Enrich with sector/industry: static map first, live _fund_data overrides
     for s in all_stocks:
         sym = s.get("display_ticker") or (s.get("ticker") or "").replace(".NS", "")
+        static = _SECTOR_MAP.get(sym, {})
+        if static.get("sector") and not s.get("sector"):
+            s["sector"] = static["sector"]
+        if static.get("industry") and not s.get("industry"):
+            s["industry"] = static["industry"]
         fund = _fund_data.get(sym) or _fund_data.get(sym + ".NS") or {}
         if fund.get("sector"):
             s["sector"] = fund["sector"]
