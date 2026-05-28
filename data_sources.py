@@ -200,6 +200,25 @@ class ScreenerClient:
                     continue
                 html = r.text
 
+                # ── 0. Sector / Industry classification (company header breadcrumb) ─────
+                # Screener.in shows: <a href="/screen/...">Sector</a> &raquo; <a href="/screen/...">Industry</a>
+                # This breadcrumb appears near the top of the page body.
+                _cls = re.search(
+                    r'<a[^>]+href="/screen[^"]*"[^>]*>\s*([A-Za-z][^<]{2,60}?)\s*</a>'
+                    r'[^<]*(?:&raquo;|&rsaquo;|&#8250;|»|›)[^<]*'
+                    r'<a[^>]+href="/screen[^"]*"[^>]*>\s*([^<]{2,80}?)\s*</a>',
+                    html[:8000],
+                    re.IGNORECASE | re.DOTALL,
+                )
+                if _cls:
+                    import html as _html_mod
+                    _sec_raw = _html_mod.unescape(_cls.group(1)).strip()
+                    _ind_raw = _html_mod.unescape(_cls.group(2)).strip()
+                    if _sec_raw:
+                        result.setdefault('sector',   _sec_raw)
+                    if _ind_raw:
+                        result.setdefault('industry', _ind_raw)
+
                 # ── 1. Key metrics block ──────────────────────────────────────────────
                 kv = re.findall(
                     r'<span\s+class="name">\s*(.*?)\s*</span>.*?<span\s+class="number">([\d,\.]+)',
@@ -1308,7 +1327,8 @@ class FundamentalsClient:
                           "current_ratio", "cash_from_operations",
                           "opm", "net_profit_margin", "face_value", "eps",
                           "week52_high", "week52_low", "industry_pe",
-                          "pb_ratio", "peg_ratio", "quick_ratio", "interest_coverage"):
+                          "pb_ratio", "peg_ratio", "quick_ratio", "interest_coverage",
+                          "sector", "industry"):
                     if k in sc and sc[k] is not None:
                         extras[k] = sc[k]
         except Exception:
@@ -1340,7 +1360,8 @@ class FundamentalsClient:
                           "current_ratio", "cash_from_operations",
                           "opm", "net_profit_margin", "face_value", "eps",
                           "week52_high", "week52_low", "industry_pe",
-                          "pb_ratio", "peg_ratio", "quick_ratio", "interest_coverage"):
+                          "pb_ratio", "peg_ratio", "quick_ratio", "interest_coverage",
+                          "sector", "industry"):
                     if k in sc and sc[k] is not None:
                         extras[k] = sc[k]
         except Exception:

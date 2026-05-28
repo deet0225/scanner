@@ -1316,7 +1316,8 @@ def _fund_refresh_ticker(ticker: str) -> tuple:
                   "pe_ratio", "book_value", "dividend_yield",
                   "debt_equity", "market_cap_cr", "current_price",
                   "current_ratio", "cash_from_operations",
-                  "opm", "net_profit_margin"):
+                  "opm", "net_profit_margin",
+                  "sector", "industry"):
             if k in extra and extra[k] is not None:
                 result[k] = extra[k]
     except Exception:
@@ -1951,7 +1952,7 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
         }
 
         # Pull ALL cached fundamentals into the record
-        for k in ("sector", "debt_equity", "market_cap_cr", "current_price",
+        for k in ("sector", "industry", "debt_equity", "market_cap_cr", "current_price",
                   "roce", "roe", "roe_5y", "roe_10y",
                   "promoter_holding", "fii_holding", "dii_holding", "inst_holding",
                   "sales_growth_pct", "sales_growth_5y", "sales_growth_10y",
@@ -2522,7 +2523,8 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
                   "pe_ratio", "book_value", "dividend_yield",
                   "debt_equity", "market_cap_cr", "current_price",
                   "current_ratio", "cash_from_operations",
-                  "opm", "net_profit_margin"):
+                  "opm", "net_profit_margin",
+                  "sector", "industry"):
             if k in extra and extra[k] is not None:
                 result[k] = extra[k]
     except Exception:
@@ -3093,7 +3095,7 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
             "exchange":       _sme_universe.get(ticker, "NSE Emerge"),
         }
 
-        for k in ("sector", "debt_equity", "market_cap_cr", "current_price",
+        for k in ("sector", "industry", "debt_equity", "market_cap_cr", "current_price",
                   "roce", "roe", "roe_5y", "roe_10y",
                   "promoter_holding", "fii_holding", "dii_holding", "inst_holding",
                   "sales_growth_pct", "sales_growth_5y", "sales_growth_10y",

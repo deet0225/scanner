@@ -2519,6 +2519,7 @@ function renderSME(stocks) {
       exchCell +
       '<td>' +
         '<div class="ticker-sym">' + (s.display_ticker || s.ticker || '--') + '</div>' +
+        (s.industry ? '<div class="sector-sub" style="color:var(--blue);font-size:0.68rem;">' + s.industry + '</div>' : '') +
         '<div class="sector-sub">' + (s.sector || '--') + '</div>' +
         (s.dividend_yield ? '<div class="sector-sub" style="color:var(--green)">Div:' + Number(s.dividend_yield).toFixed(2) + '%</div>' : '') +
       '</td>' +
@@ -3106,6 +3107,7 @@ function renderFundamentals(stocks) {
       '<td><div class="rank-badge ' + rkCls + ' mx-auto">' + rankLbl + '</div></td>' +
       '<td>' +
         '<div class="ticker-sym">' + (s.display_ticker || s.ticker || '--') + '</div>' +
+        (s.industry ? '<div class="sector-sub" style="color:var(--blue);font-size:0.68rem;">' + s.industry + '</div>' : '') +
         '<div class="sector-sub">' + (s.sector || '--') + '</div>' +
         (s.dividend_yield ? '<div class="sector-sub" style="color:var(--green)">Div:' + Number(s.dividend_yield).toFixed(2) + '%</div>' : '') +
       '</td>' +
