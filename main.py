@@ -2893,11 +2893,13 @@ async def get_stock_momentum(
     # Compute momentum score and sort
     for s in all_stocks:
         s["mom_score"] = _mom_score(s)
-        # Enrich with sector from fundamentals cache (best-effort — no blocking call)
+        # Enrich with sector/industry from fundamentals cache (best-effort — no blocking call)
         sym = s.get("display_ticker") or (s.get("ticker") or "").replace(".NS", "")
         fund = _fund_data.get(sym) or _fund_data.get(sym + ".NS") or {}
         if fund.get("sector"):
             s["sector"] = fund["sector"]
+        if fund.get("industry"):
+            s["industry"] = fund["industry"]
     all_stocks.sort(key=lambda x: x["mom_score"], reverse=True)
     filtered = all_stocks
 
