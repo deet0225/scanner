@@ -414,11 +414,11 @@
       <span id="status-text" style="font-size:0.82rem;">Initializing...</span>
     </span>
     <span id="last-updated" style="font-size:0.78rem;" class="topbar-muted">--</span>
-    <button class="force-refresh-btn" id="force-refresh-btn" onclick="forceRefreshLive()"
-            title="Stop all running scans, clear all caches (OHLCV + Fundamentals + SME), then re-download fresh live data from scratch — use when results differ from Render">
-      <i class="bi bi-cloud-download icon"></i>
+    <button class="force-refresh-btn" id="force-refresh-btn" onclick="clearCacheOnly()"
+            title="Stop all running scans and clear all caches (OHLCV + Fundamentals + SME). Data reloads when you visit each tab.">
+      <i class="bi bi-trash icon"></i>
       <i class="bi bi-arrow-clockwise spin"></i>
-      Force Live Data
+      Clear Cache
     </button>
     <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle light/dark theme">
       <span id="theme-icon">☀️</span>
@@ -2323,7 +2323,7 @@ function smeLoad(forceRefresh, _retries) {
       if ((httpStatus === 502 || httpStatus === 503) && _retries < 5 && activeTab === 'sme') {
         var attempt = _retries + 1;
         document.getElementById('sme-results-body').innerHTML =
-          '<tr><td colspan="14"><div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2 text-warning"></i>' +
+          '<tr><td colspan="15"><div class="empty-state"><i class="bi bi-hourglass-split fs-2 d-block mb-2 text-warning"></i>' +
           '⏳ Server is waking up — retrying in 6 s… (' + attempt + '/5)</div></td></tr>';
         _smePollTimer = setTimeout(function() {
           if (activeTab === 'sme') smeLoad(forceRefresh, attempt);
@@ -2331,7 +2331,7 @@ function smeLoad(forceRefresh, _retries) {
         return;
       }
       document.getElementById('sme-results-body').innerHTML =
-        '<tr><td colspan="14"><div class="empty-state"><i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
+        '<tr><td colspan="15"><div class="empty-state"><i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
         'Error: ' + err + '</div></td></tr>';
     });
 }
@@ -2339,7 +2339,7 @@ function smeLoad(forceRefresh, _retries) {
 function renderSME(stocks) {
   var tbody = document.getElementById('sme-results-body');
   if (!stocks || !stocks.length) {
-    tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' +
+    tbody.innerHTML = '<tr><td colspan="15"><div class="empty-state">' +
       '<i class="bi bi-buildings fs-2 d-block mb-2"></i>' +
       '<strong>No SME stocks passed high-growth gates yet</strong><br>' +
       '<small style="color:var(--text-muted);">' +
@@ -2364,6 +2364,15 @@ function renderSME(stocks) {
     var cp    = s.current_price || s.price;
     var cpStr = cp != null
       ? '<span style="font-family:monospace;font-weight:700;">&#8377;' + Number(cp).toLocaleString('en-IN', {maximumFractionDigits:1}) + '</span>'
+      : '<span style="color:var(--text-muted);">--</span>';
+
+    // Stop Loss
+    var slStr = s.stop_loss != null
+      ? '<span class="sl-val">&#8377;' + Number(s.stop_loss).toLocaleString('en-IN', {maximumFractionDigits:2}) + '</span>' +
+        (s.atr14 != null ? '<div class="sl-sub">ATR14:' + Number(s.atr14).toFixed(2) + '</div>' : '') +
+        (cp != null && s.stop_loss != null
+          ? '<div class="sl-sub">' + (((Number(cp) - s.stop_loss) / Number(cp)) * 100).toFixed(1) + '% risk</div>'
+          : '')
       : '<span style="color:var(--text-muted);">--</span>';
 
     // Market cap
@@ -2514,6 +2523,7 @@ function renderSME(stocks) {
         (s.dividend_yield ? '<div class="sector-sub" style="color:var(--green)">Div:' + Number(s.dividend_yield).toFixed(2) + '%</div>' : '') +
       '</td>' +
       '<td style="font-size:0.82rem; white-space:nowrap;">' + cpStr + '</td>' +
+      '<td style="font-size:0.78rem; white-space:nowrap;">' + slStr + '</td>' +
       '<td style="font-size:0.78rem;">' + mcStr + '</td>' +
       '<td>' + deStr + '</td>' +
       '<td>' + roceStr + '</td>' +
@@ -3125,8 +3135,9 @@ function fmtNum(v) {
 // ── Startup ── connect both N500 + MC250 streams right away
 swingConnect();
 
-// ── Force Live Data Refresh (stop all scans → clear ALL caches → rescan) ────
-function forceRefreshLive() {
+// ── Clear Cache (stop all scans → clear ALL caches — NO auto-rescan) ────────
+// Data reloads only when the user clicks on each tab.
+function clearCacheOnly() {
   var btn = document.getElementById('force-refresh-btn');
   if (!btn || btn.disabled) return;
   btn.disabled = true;
@@ -3148,9 +3159,9 @@ function forceRefreshLive() {
       _showForceToast('⏳', 'All scans stopped. Clearing all local caches…');
 
       // Step 1: clear OHLCV cache (pkl files used by price-based scans)
-      var p1 = fetch('/api/cache/clear', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
+      var p1 = fetch('/api/cache/clear',                  {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
       // Step 2: invalidate fundamentals cache (screener.in data, JSON)
-      var p2 = fetch('/api/fundamentals/clear-cache', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
+      var p2 = fetch('/api/fundamentals/clear-cache',     {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
       // Step 3: invalidate SME fundamentals cache (screener.in data, JSON)
       var p3 = fetch('/api/sme/fundamentals/clear-cache', {method: 'POST'}).then(function(r){ return r.json(); }).catch(function(){ return {}; });
 
@@ -3164,30 +3175,15 @@ function forceRefreshLive() {
         _showForceToast('✅',
           'Cleared: ' + ohlcvDeleted + ' OHLCV files, ' +
           fundReset + ' fund entries, ' + smeReset + ' SME entries' +
-          (scTotal > 0 ? ', ' + scTotal + ' Screener.in HTML-cache entries' : '') +
-          '. Re-downloading from scratch…');
-
-        // Trigger fresh scans for all scan types (price/technical tabs)
-        fetch('/api/rescan',                  {method: 'POST'}).catch(function(){});
-        fetch('/api/microcap/rescan',         {method: 'POST'}).catch(function(){});
-        fetch('/api/stock-momentum/rescan',   {method: 'POST'}).catch(function(){});
-        fetch('/api/morning-momentum/rescan', {method: 'POST'}).catch(function(){});
-        // Trigger fundamentals background refresh (both tabs)
-        fetch('/api/fundamentals?refresh=1').catch(function(){});
-        fetch('/api/sme/fundamentals?refresh=1').catch(function(){});
-
-        // Reset swing UI so it shows "scanning" state immediately
-        _swingN5Status = 'scanning'; _swingMcStatus = 'scanning';
-        _swingUpdateUI();
+          (scTotal > 0 ? ', ' + scTotal + ' Screener.in cache entries' : '') +
+          '. Click any tab to reload fresh data.');
 
         setTimeout(function() {
           btn.disabled = false;
           btn.classList.remove('working');
-          _showForceToast('🚀',
-            'All scans stopped, caches cleared (incl. Screener.in HTML cache). ' +
-            'Live download started — Fundamentals/SME tabs show partial data while ' +
-            '750 tickers re-fetch (2–5 min). ' +
-            'Wait for "✓ all fresh" indicator before comparing results across servers.');
+          _showForceToast('🗑️',
+            'All caches cleared. ' +
+            'Click Swing Trades / Fundamentals / SME / any tab to start a fresh download.');
           setTimeout(function() {
             var t = document.getElementById('force-refresh-toast');
             if (t) t.classList.remove('show');

@@ -1796,6 +1796,46 @@ def _fund_quality_score(rec: dict) -> float:
     return round(min(100.0, max(0.0, score)), 2)
 
 
+def _compute_stop_loss_from_cache(ticker: str, cp: float):
+    """Compute ATR14-based structural stop loss from OHLCV disk cache.
+
+    Uses the same bounded formula as _analyze() / _analyze_momentum():
+        stop = clamp(max(last_low, 3-bar_low, cp − 1×ATR14),
+                     [cp − 1.5×ATR14, cp − 0.5×ATR14])
+
+    Returns (stop_loss, atr14) rounded to 2 dp, or (None, None) on any failure.
+    No network calls — reads only from the local .pkl cache on disk.
+    """
+    try:
+        import pandas as _pd
+        df = _ohlcv_cache.load(ticker)
+        if df is None or len(df) < 20:
+            return None, None
+        h  = df["High"]
+        lo = df["Low"]
+        c  = df["Close"]
+        tr = _pd.concat([
+            (h - lo).abs(),
+            (h - c.shift(1)).abs(),
+            (lo - c.shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        atr14_s   = tr.ewm(com=13, min_periods=14, adjust=False).mean()
+        atr_clean = atr14_s.dropna()
+        if atr_clean.empty:
+            return None, None
+        atr14_val = float(atr_clean.iloc[-1])
+        if atr14_val <= 0 or _pd.isna(atr14_val):
+            return None, None
+        cl         = float(lo.iloc[-1])
+        sl_recent  = float(lo.iloc[-4:-1].min()) if len(lo) >= 4 else cl
+        sl_struct  = max(cl, sl_recent)
+        sl_cand    = max(sl_struct, cp - 1.0 * atr14_val)
+        stop_loss  = round(min(max(sl_cand, cp - 1.5 * atr14_val), cp - 0.5 * atr14_val), 2)
+        return stop_loss, round(atr14_val, 2)
+    except Exception:
+        return None, None
+
+
 @app.get("/api/fundamentals")
 async def get_fundamentals(refresh: int = 0) -> JSONResponse:
     """
@@ -1815,7 +1855,7 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
     Uses a disk cache (cache/fundamentals_data.json) that persists across restarts.
     Pass ?refresh=1 to force an immediate background refresh.
     """
-    global _fund_bg_running, _fund_result_cache_body, _fund_result_cache_valid
+    global _fund_bg_running, _fund_result_cache_body, _fund_result_cache_valid, _fund_last_completed_ts
 
     # Fundamentals tab covers Nifty500 + Microcap250 (combined de-duped universe).
     # Performance is maintained via 10-worker parallel downloads + known-fail skip TTL
@@ -1849,6 +1889,11 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
         if now - _fund_data.get(t, {}).get("_ts", 0)
            > (_FUND_FAIL_TTL if _fund_data.get(t, {}).get("_gf") else _FUND_CACHE_TTL)
     ]
+    # When all tickers are fresh from disk cache (no BG worker needed), stamp the
+    # completed timestamp so the UI shows "all fresh/from cache" correctly.
+    if not stale and not _fund_bg_running and _fund_last_completed_ts == 0 and len(all_tickers) > 0:
+        _fund_last_completed_ts = time.time()
+
     if stale and not _fund_bg_running:
         _fund_bg_running = True
         _fund_cancel.clear()   # allow this worker to run (user is on fund tab)
@@ -1943,6 +1988,14 @@ async def get_fundamentals(refresh: int = 0) -> JSONResponse:
         # Sync current_price from scan result if not in cache
         if "price" in rec and "current_price" not in rec:
             rec["current_price"] = rec["price"]
+
+        # Stop loss — compute from OHLCV disk cache (no network)
+        cp_val = rec.get("current_price") or rec.get("price")
+        if cp_val:
+            sl_val, atr_val = _compute_stop_loss_from_cache(ticker, float(cp_val))
+            if sl_val is not None:
+                rec["stop_loss"] = sl_val
+                rec["atr14"]     = atr_val
 
         rec["fund_score"] = _fund_quality_score(rec)
         combined.append(rec)
@@ -2967,7 +3020,7 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
     Gates: ROCE≥15%, ROE≥15%, D/E≤1.5, ProfitGrowth3Y≥25%, SalesGrowth≥25%, CFO>0.
     Each result includes an 'exchange' field: 'NSE Emerge' or 'BSE SME'.
     """
-    global _sme_bg_running, _sme_universe, _sme_result_cache_body, _sme_result_cache_valid
+    global _sme_bg_running, _sme_universe, _sme_result_cache_body, _sme_result_cache_valid, _sme_last_completed_ts
 
     # Build universe on first call (cached in module-level dict after that)
     if not _sme_universe:
@@ -2990,6 +3043,11 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
         if now - _sme_fund_data.get(t, {}).get("_ts", 0)
            > (_SME_FAIL_TTL if _sme_fund_data.get(t, {}).get("_gf") else _SME_FUND_CACHE_TTL)
     ]
+    # When all tickers are fresh from disk cache (no BG worker needed), stamp the
+    # completed timestamp so the UI shows "all fresh/from cache" correctly.
+    if not stale and not _sme_bg_running and _sme_last_completed_ts == 0 and len(all_tickers) > 0:
+        _sme_last_completed_ts = time.time()
+
     if stale and not _sme_bg_running:
         _sme_bg_running = True
         _sme_cancel.clear()   # allow this worker to run (user is on sme tab)
@@ -3056,6 +3114,14 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
         # Apply SME high-growth gates before scoring
         if not _passes_sme_gates(rec):
             continue
+
+        # Stop loss — compute from OHLCV disk cache (no network)
+        cp_sme = rec.get("current_price") or rec.get("price")
+        if cp_sme:
+            sl_sme, atr_sme = _compute_stop_loss_from_cache(ticker, float(cp_sme))
+            if sl_sme is not None:
+                rec["stop_loss"] = sl_sme
+                rec["atr14"]     = atr_sme
 
         rec["fund_score"] = _sme_quality_score(rec)
         combined.append(rec)
