@@ -3295,6 +3295,47 @@ async def get_morning_momentum(
         scan_stage   = ""
     else:
         # Live mode: read from dedicated Morning Star scan state
+
+        # ── Auto-retrigger when data is from a PREVIOUS IST day ──────────────────
+        # Morning Star checks the LAST 3 CANDLES specifically.  If the cached results
+        # are from yesterday (or earlier), the pattern is completely stale — yesterday's
+        # Day-1/2/3 candles are different stocks/shapes than today's.  This causes the
+        # most visible local-vs-Render discrepancy because even a 1-day data difference
+        # changes the entire Morning Star result set.
+        # Fix: whenever today's IST date is newer than the last scan's date, mark the
+        # state as "scanning" and launch a background refresh immediately so the next
+        # poll returns fresh results.
+        _today_ist = _ist_today()
+
+        def _is_prev_day(lu: "str | None") -> bool:
+            """Return True if last_updated string is from a day before today (IST)."""
+            if not lu:
+                return False
+            try:
+                return DateType.fromisoformat(lu.split()[0]) < _today_ist
+            except Exception:
+                return False
+
+        if (_is_prev_day(ms_scan_state.get("last_updated"))
+                and ms_scan_state["status"] not in ("scanning",)):
+            logger.info(
+                "Morning Star N500: last scan %s < today %s — auto-retriggering",
+                ms_scan_state.get("last_updated", "?"), _today_ist,
+            )
+            ms_scan_state["status"]     = "scanning"
+            ms_scan_state["scan_stage"] = "Auto-refresh: previous day data — rescanning..."
+            asyncio.create_task(run_n500_ms_scan())
+
+        if (_is_prev_day(mc_ms_scan_state.get("last_updated"))
+                and mc_ms_scan_state["status"] not in ("scanning",)):
+            logger.info(
+                "Morning Star MC250: last scan %s < today %s — auto-retriggering",
+                mc_ms_scan_state.get("last_updated", "?"), _today_ist,
+            )
+            mc_ms_scan_state["status"]     = "scanning"
+            mc_ms_scan_state["scan_stage"] = "Auto-refresh: previous day data — rescanning..."
+            asyncio.create_task(run_mc250_ms_scan())
+
         n500_all     = [dict(s, from_index="Nifty 500")    for s in (ms_scan_state.get("data")    or [])]
         mc_all       = [dict(s, from_index="Microcap 250") for s in (mc_ms_scan_state.get("data") or [])]
         n500_status  = ms_scan_state["status"]
