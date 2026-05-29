@@ -419,7 +419,11 @@ async def get_sector_momentum(
 async def get_sector_stocks(sector: str = "") -> JSONResponse:
     """Return top 20 stocks for the given industry/sector label,
     ranked by fundamental quality score.  Falls back to 20D price return.
+    Automatically triggers a background fundamentals fetch for any sector
+    stocks that are missing cached data.
     """
+    import asyncio as _asyncio
+
     if not sector:
         return JSONResponse({"error": "sector param required", "stocks": []}, status_code=400)
 
@@ -439,23 +443,84 @@ async def get_sector_stocks(sector: str = "") -> JSONResponse:
                 scan_lookup[sym] = s
 
     def _ohlcv_returns(sym: str):
+        """Return (r5d, r20d, current_price, rsi14) from the OHLCV disk cache."""
         df = _ohlcv_cache.load(sym + ".NS")
         if df is None or len(df) < 6:
-            return None, None
+            return None, None, None, None
         try:
             closes = df["Close"].dropna()
             r5  = round((float(closes.iloc[-1]) / float(closes.iloc[-6])  - 1) * 100, 2) if len(closes) >= 6  else None
             r20 = round((float(closes.iloc[-1]) / float(closes.iloc[-21]) - 1) * 100, 2) if len(closes) >= 21 else None
-            return r5, r20
+            cp  = round(float(closes.iloc[-1]), 2) if len(closes) >= 1 else None
+            rsi = None
+            if len(closes) >= 15:
+                try:
+                    rsi = round(float(StockScanner._rsi(closes, 14).iloc[-1]), 1)
+                except Exception:
+                    pass
+            return r5, r20, cp, rsi
         except Exception:
-            return None, None
+            return None, None, None, None
+
+    # ------------------------------------------------------------------
+    # Identify sector tickers that are missing fundamentals data and
+    # fetch them NOW (parallel, with timeout) so the popup always has
+    # complete data on the first response.
+    # ------------------------------------------------------------------
+    def _get_fd(sym: str) -> dict:
+        """Return fundamentals dict for sym (tries both bare and .NS key)."""
+        return ss._fund_data.get(sym) or ss._fund_data.get(sym + ".NS") or {}
+
+    # A ticker needs a fetch if it has no actual fundamental fields.
+    # This catches both completely absent keys AND placeholder {"_ts": 0} entries.
+    _FUND_KEY_FIELDS = ("roce", "roe", "roe_5y", "debt_equity",
+                        "pe_ratio", "sales_growth_pct", "sales_growth_ttm")
+
+    def _fund_is_complete(sym: str) -> bool:
+        fd = _get_fd(sym)
+        return any(fd.get(k) is not None for k in _FUND_KEY_FIELDS)
+
+    missing_fund_tickers = [
+        sym + ".NS" for sym in tickers_in_sector
+        if not _fund_is_complete(sym)
+    ]
+
+    fund_loading = False
+    if missing_fund_tickers:
+        # Fetch fundamental data for missing tickers RIGHT NOW using a
+        # thread pool so the response already contains complete data.
+        # Cap at 20 tickers / 12 parallel workers to avoid long waits.
+        try:
+            from routes.fundamentals import _fund_refresh_ticker, _fund_cache_save
+            from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+
+            fetch_targets = missing_fund_tickers[:20]
+            logger.info("Sector stocks: fetching fundamentals for %d missing tickers in '%s'",
+                        len(fetch_targets), sector)
+
+            with ThreadPoolExecutor(max_workers=12) as _pool:
+                futures = {_pool.submit(_fund_refresh_ticker, t): t for t in fetch_targets}
+                for fut in _as_completed(futures, timeout=15):
+                    try:
+                        fut.result()
+                    except Exception:
+                        pass
+
+            _fund_cache_save()
+
+            # Re-check how many are still missing after the fetch
+            still_missing = [t for t in missing_fund_tickers if not _fund_is_complete(t.replace(".NS", ""))]
+            fund_loading = bool(still_missing)
+        except Exception as exc:
+            logger.debug("Sector fund fetch error: %s", exc)
+            fund_loading = True  # signal UI to retry
 
     has_fund = False
     records  = []
     for sym in tickers_in_sector:
-        fd   = ss._fund_data.get(sym) or ss._fund_data.get(sym + ".NS") or {}
+        fd   = _get_fd(sym)
         sc   = scan_lookup.get(sym, {})
-        r5, r20 = _ohlcv_returns(sym)
+        r5, r20, ohlcv_price, ohlcv_rsi = _ohlcv_returns(sym)
         if r5 is None and r20 is None:
             continue
 
@@ -483,13 +548,18 @@ async def get_sector_stocks(sector: str = "") -> JSONResponse:
         else:
             f_score = (r20 or 0.0)
 
+        # Prefer fundamentals price; fall back to last OHLCV close
+        price = fd.get("current_price") or fd.get("price") or ohlcv_price
+        # Prefer scan-state RSI (intraday); fall back to OHLCV-computed RSI
+        rsi   = sc.get("rsi") or ohlcv_rsi
+
         records.append({
             "symbol":           sym,
             "name":             fd.get("company_name") or fd.get("name") or sym,
-            "current_price":    fd.get("current_price") or fd.get("price"),
+            "current_price":    price,
             "ret_5d":           r5,
             "ret_20d":          r20 if r20 is not None else sc.get("return_20d"),
-            "rsi":              sc.get("rsi"),
+            "rsi":              rsi,
             "rs_pct":           sc.get("rs_outperf_pct"),
             "roce":             roce,
             "roe":              roe,
@@ -509,5 +579,6 @@ async def get_sector_stocks(sector: str = "") -> JSONResponse:
         "stocks":           records[:20],
         "total":            len(records),
         "has_fundamentals": has_fund,
+        "fund_loading":     fund_loading,
     })
 

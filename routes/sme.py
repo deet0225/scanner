@@ -20,9 +20,11 @@ import math
 import time
 from pathlib import Path as _PL
 
+import pandas as _pd
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+import cache as _ohlcv_cache
 import shared_state as ss
 from routes.utils import _compute_stop_loss_from_cache
 
@@ -64,11 +66,18 @@ def _sme_cache_load() -> None:
                 _SME_FUND_CACHE_FILE.read_text(encoding="utf-8")
             )
             invalidated = 0
+            # Only invalidate entries that have NO useful fundamental data at all.
+            # Many SME/Emerge stocks legitimately lack CFO or OPM data on Screener.in;
+            # invalidating those on every restart causes perpetual re-downloads with no results.
+            _USEFUL_FIELDS = (
+                "roce", "roe", "roe_5y",
+                "profit_growth_3y", "profit_growth_5y",
+                "sales_growth_pct", "sales_growth_5y",
+                "market_cap_cr", "current_price",
+            )
             for entry in ss._sme_fund_data.values():
                 if isinstance(entry, dict) and entry.get("_ts", 0) > 0:
-                    if "roce" not in entry or not any(
-                        k in entry for k in ("cash_from_operations", "cfo_yield")
-                    ) or not any(k in entry for k in ("opm", "net_profit_margin")):
+                    if not any(k in entry for k in _USEFUL_FIELDS):
                         entry["_ts"] = 0
                         invalidated += 1
             logger.info("SME fund cache loaded: %d entries (%d invalidated)",
@@ -108,25 +117,32 @@ def _passes_sme_gates(rec: dict) -> bool:
       D/E  ≤ 1.5           Moderate leverage
       Profit Growth ≥ 25%  No stagnant earners
       Sales  Growth ≥ 25%  Fast-growing revenue
-      OPM    ≥ 8%          Operational profitability
+      OPM    ≥ 8%          Operational profitability (only applied when OPM is available)
       TTM    ≥ 15%         Recent order-book momentum
       Cash Quality (composite) — CCR, CF/Debt, deep negative CFO check
     """
-    key_vals = [
-        rec.get("roce"),
-        rec.get("roe") or rec.get("roe_5y") or rec.get("roe_10y"),
-        rec.get("profit_growth_3y") or rec.get("profit_growth_5y"),
-        rec.get("sales_growth_pct") or rec.get("sales_growth_5y"),
-    ]
+    # Use explicit is-not-None checks to avoid the Python `or`-chain pitfall where
+    # a value of 0 is treated as "missing" (0 or fallback → fallback instead of 0).
+    def _first_valid(*args):
+        """Return first non-None value, or None if all are None."""
+        for v in args:
+            if v is not None:
+                return v
+        return None
+
+    roce_v  = rec.get("roce")
+    roe_v   = _first_valid(rec.get("roe"), rec.get("roe_5y"), rec.get("roe_10y"))
+    pg_v    = _first_valid(rec.get("profit_growth_3y"), rec.get("profit_growth_5y"))
+    sg_v    = _first_valid(rec.get("sales_growth_pct"), rec.get("sales_growth_5y"))
+
+    key_vals = [roce_v, roe_v, pg_v, sg_v]
     if sum(1 for v in key_vals if v is not None) < _SME_MIN_KEY_FIELDS:
         return False
 
-    roce = rec.get("roce")
-    if roce is not None and float(roce) < _SME_ROCE_MIN:
+    if roce_v is not None and float(roce_v) < _SME_ROCE_MIN:
         return False
 
-    roe = rec.get("roe") or rec.get("roe_5y") or rec.get("roe_10y")
-    if roe is not None and float(roe) < _SME_ROE_MIN:
+    if roe_v is not None and float(roe_v) < _SME_ROE_MIN:
         return False
 
     de = rec.get("debt_equity")
@@ -134,17 +150,18 @@ def _passes_sme_gates(rec: dict) -> bool:
     if de is not None and de_f > _SME_DE_MAX:
         return False
 
-    pg = rec.get("profit_growth_3y") or rec.get("profit_growth_5y")
-    if pg is not None and float(pg) < _SME_PROFIT_GROW_MIN:
+    if pg_v is not None and float(pg_v) < _SME_PROFIT_GROW_MIN:
         return False
 
-    sg = rec.get("sales_growth_pct") or rec.get("sales_growth_5y")
-    if sg is not None and float(sg) < _SME_SALES_GROW_MIN:
+    if sg_v is not None and float(sg_v) < _SME_SALES_GROW_MIN:
         return False
 
-    opm = rec.get("opm") if rec.get("opm") is not None else rec.get("net_profit_margin")
-    opm_f = float(opm) if opm is not None else None
-    if opm_f is not None and opm_f < _SME_OPM_MIN:
+    # OPM gate: only apply when OPM is explicitly available.
+    # net_profit_margin (NPM) is NOT a valid proxy — NPM < OPM due to interest & tax,
+    # so using NPM as a fallback would incorrectly reject stocks with good operating margins
+    # but high debt costs (common for growth-stage SME companies).
+    opm_v = rec.get("opm")
+    if opm_v is not None and float(opm_v) < _SME_OPM_MIN:
         return False
 
     ttm_pg = rec.get("profit_growth_ttm")
@@ -183,6 +200,7 @@ def _passes_sme_gates(rec: dict) -> bool:
                 return False
 
             # 3. Deep negative CFO without OPM confirmation
+            opm_f = float(opm_v) if opm_v is not None else None
             if cfo_f < _SME_CFO_DEEP_NEG and (opm_f is None or opm_f < _SME_OPM_MIN):
                 return False
 
@@ -460,6 +478,28 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
     if fii is not None and dii is not None:
         result["inst_holding"] = round(fii + dii, 2)
 
+    # Download OHLCV for ATR-based stop loss (so the Stop Loss column is populated).
+    # SME tickers are stored as plain symbols (e.g. "AAKAAR"); we need the exchange
+    # suffix (".NS" for NSE Emerge, ".BO" for BSE SME) for yfinance / cache look-up.
+    try:
+        exchange    = ss._sme_universe.get(ticker, "NSE Emerge")
+        suffix      = ".NS" if exchange == "NSE Emerge" else ".BO"
+        ticker_yf   = ticker + suffix
+        existing_df = _ohlcv_cache.load(ticker_yf)
+        if existing_df is None or len(existing_df) < 20 or not _ohlcv_cache.is_fresh(existing_df):
+            import yfinance as _yf  # deferred — only needed here
+            raw = _yf.download(
+                ticker_yf, period="6mo",
+                auto_adjust=True, progress=False, threads=False,
+            )
+            # yfinance ≥ 0.2 may return a MultiIndex; flatten it
+            if isinstance(raw.columns, _pd.MultiIndex):
+                raw.columns = raw.columns.droplevel(1)
+            if raw is not None and not raw.empty and len(raw) >= 20:
+                _ohlcv_cache.save(ticker_yf, raw)
+    except Exception as _exc:
+        logger.debug("SME OHLCV download failed for %s: %s", ticker, _exc)
+
     # Content-change detection
     existing = ss._sme_fund_data.get(ticker, {})
     content_changed = any(existing.get(k) != v for k, v in result.items())
@@ -527,10 +567,12 @@ def _sme_bg_worker(tickers: list, generation: int = 0) -> None:
                 try:
                     _, result, changed = future.result()
                     key_coverage = sum(
-                        1 for v in [result.get("roce"),
-                                    result.get("roe") or result.get("roe_5y"),
-                                    result.get("profit_growth_3y") or result.get("profit_growth_5y"),
-                                    result.get("sales_growth_pct") or result.get("sales_growth_5y")]
+                        1 for v in [
+                            result.get("roce"),
+                            next((result.get(k) for k in ("roe", "roe_5y", "roe_10y") if result.get(k) is not None), None),
+                            next((result.get(k) for k in ("profit_growth_3y", "profit_growth_5y") if result.get(k) is not None), None),
+                            next((result.get(k) for k in ("sales_growth_pct", "sales_growth_5y") if result.get(k) is not None), None),
+                        ]
                         if v is not None
                     )
                     with ss._sme_fund_lock:
@@ -665,10 +707,18 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
 
         cp_sme = rec.get("current_price") or rec.get("price")
         if cp_sme:
-            sl_sme, atr_sme = _compute_stop_loss_from_cache(ticker, float(cp_sme))
-            if sl_sme is not None:
-                rec["stop_loss"] = sl_sme
-                rec["atr14"]     = atr_sme
+            # Use the exchange-suffixed ticker so the OHLCV cache can be found
+            # (cache files use TICKER_NS.pkl / TICKER_BO.pkl naming).
+            _exchange  = ss._sme_universe.get(ticker, "NSE Emerge")
+            _suffix    = ".NS" if _exchange == "NSE Emerge" else ".BO"
+            _ticker_yf = ticker + _suffix
+            sl_sme, atr_sme = _compute_stop_loss_from_cache(_ticker_yf, float(cp_sme))
+            if sl_sme is None:
+                # Fallback: 5% below current price (ATR data not yet cached).
+                sl_sme = round(float(cp_sme) * 0.95, 2)
+            rec["stop_loss"] = sl_sme
+            if atr_sme is not None:
+                rec["atr14"] = atr_sme
 
         rec["fund_score"] = _sme_quality_score(rec)
         combined.append(rec)
