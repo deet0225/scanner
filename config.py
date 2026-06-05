@@ -179,8 +179,12 @@ AUTO_RESCAN           = False
 # --------------------------------------------------------------------------- #
 DOWNLOAD_THREADS     = 20
 DOWNLOAD_BATCH_SIZE  = 100
-FUNDAMENTALS_THREADS = 12
-FUNDAMENTALS_DELAY   = 0.0
+# Reduced from 12 → 5: fewer concurrent screener.in connections avoids
+# Cloudflare bot-detection on Render's fixed IP.  The ScreenerClient
+# rate-limiter (0.40 s min-gap) is the primary guard; this is a secondary
+# cap on goroutine count.  Tune up if screener.in proves stable.
+FUNDAMENTALS_THREADS = 5
+FUNDAMENTALS_DELAY   = 0.0   # additional inter-batch delay (s); 0 = rely on rate-limiter alone
 DOWNLOAD_THROTTLE    = 0
 CRUMB_TTL            = 3500
 

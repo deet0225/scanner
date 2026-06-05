@@ -192,12 +192,31 @@ class ScreenerClient:
     _cache_ts: dict = {}
     _TTL = 3600  # 1 hour in-memory TTL
 
+    # ---------------------------------------------------------------------------
+    # Rate-limiter — shared across ALL threads and ALL instances (class-level).
+    # Prevents Cloudflare / screener.in IP-based bot-detection when the
+    # background worker fires many concurrent requests from Render's fixed IP.
+    # 0.40 s gap → max ~2.5 req/s — safe for Cloudflare's typical thresholds.
+    # ---------------------------------------------------------------------------
+    _rate_lock:           threading.Lock = threading.Lock()
+    _last_screener_call:  float          = 0.0
+    _min_gap:             float          = 0.40   # seconds between any two HTTP GETs
+
     def get(self, nse_symbol: str) -> dict | None:
         sym = nse_symbol.upper().replace(".NS", "").replace(".BO", "")
 
         now = time.time()
         if sym in self._cache and (now - self._cache_ts.get(sym, 0)) < self._TTL:
             return self._cache[sym]
+
+        # Serialise all HTTP requests to screener.in across every thread so that
+        # no more than ~2-3 requests/second leave this process.  Workers still run
+        # in parallel for CPU-bound work; only the network call is gated here.
+        with self._rate_lock:
+            gap = time.time() - self.__class__._last_screener_call
+            if gap < self._min_gap:
+                time.sleep(self._min_gap - gap)
+            self.__class__._last_screener_call = time.time()
 
         result: dict = {}
         for mode in ("consolidated", ""):    # consolidated preferred; "" = standalone

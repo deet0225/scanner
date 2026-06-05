@@ -517,10 +517,19 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
 # ---------------------------------------------------------------------------
 
 def _sme_bg_worker(tickers: list, generation: int = 0) -> None:
-    """Download SME fundamentals for stale tickers in parallel (12 threads)."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    """Download SME fundamentals for stale tickers in parallel.
 
-    MAX_WORKERS = 12
+    Worker count is taken from config.FUNDAMENTALS_THREADS (default 5).
+    The ScreenerClient rate-limiter (0.40 s min-gap) is the primary guard
+    against Render's IP being flagged by screener.in / Cloudflare.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    try:
+        from config import FUNDAMENTALS_THREADS as _cfg_threads
+    except Exception:
+        _cfg_threads = 5
+
+    MAX_WORKERS = max(1, _cfg_threads)
     BATCH_SIZE  = 50
     total_refreshed = total_changed = total_skipped = 0
     now = time.time()

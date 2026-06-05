@@ -71,8 +71,13 @@ def _fund_cache_load() -> None:
                                                ("fii_holding", "current_price", "peg_ratio"))
                     missing_cashflow = not any(k in entry for k in
                                                ("current_ratio", "cash_from_operations", "cfo_yield"))
-                    missing_margins  = not any(k in entry for k in ("opm", "net_profit_margin"))
-                    if missing_basic or missing_enhanced or missing_cashflow or missing_margins:
+                    # NOTE: opm / net_profit_margin are display-only fields that are
+                    # legitimately absent for financial-sector companies (banks, NBFCs,
+                    # insurance).  Invalidating on their absence forced a full re-download
+                    # of every financial stock on every restart — causing screener.in
+                    # rate-limiting on Render's fixed IP (the repeated local-vs-Render
+                    # discrepancy).  Only the three structural checks above are used.
+                    if missing_basic or missing_enhanced or missing_cashflow:
                         entry["_ts"] = 0
                         invalidated += 1
             logger.info("Fundamentals disk cache loaded: %d entries (%d invalidated)",
@@ -369,14 +374,24 @@ def _fund_refresh_ticker(ticker: str) -> tuple:
 # ---------------------------------------------------------------------------
 
 def _fund_bg_worker(tickers: list, generation: int = 0) -> None:
-    """Download fundamentals for stale tickers in parallel (12 threads).
+    """Download fundamentals for stale tickers in parallel.
+
+    Worker count is taken from config.FUNDAMENTALS_THREADS (default 5) so
+    it can be tuned without a code change.  Keeping it ≤ 5 avoids hammering
+    screener.in with too many simultaneous requests from Render's fixed IP
+    (the ScreenerClient rate-limiter provides the primary guard, but fewer
+    workers means fewer goroutines competing for that single gate).
 
     `generation` is captured at launch — worker self-terminates when a newer
     generation is detected (Force-Live-Data clicked again).
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    try:
+        from config import FUNDAMENTALS_THREADS as _cfg_threads
+    except Exception:
+        _cfg_threads = 5
 
-    MAX_WORKERS  = 12
+    MAX_WORKERS  = max(1, _cfg_threads)
     BATCH_SIZE   = 50
     total_refreshed = total_changed = total_skipped = 0
     now = time.time()
