@@ -217,20 +217,33 @@ def _sme_quality_score(rec: dict) -> float:
     Cash Flow (12) + Debt (8) + Value (4) + Size (3) = 100 base pts.
     Bonuses: big acceleration (+2), div yield (+1), 10Y track record (+1).
     """
+    def _first_valid(*args):
+        """Return first non-None value, or None if all are None."""
+        for v in args:
+            if v is not None:
+                return v
+        return None
+
     score = 0.0
 
     # Growth CAGR block (35 pts) -------------------------------------------
-    pg3 = rec.get("profit_growth_3y") or rec.get("profit_growth_5y")
+    # Use _first_valid (not `or`) so that a genuine 0% growth is honoured
+    # rather than falling through to the 5-year figure.
+    pg3     = _first_valid(rec.get("profit_growth_3y"), rec.get("profit_growth_5y"))
     pg3_val = float(pg3) if pg3 is not None else None
     if pg3_val is not None:
         score += min(18.0, max(0.0, pg3_val * 0.225))
 
-    sg3 = rec.get("sales_growth_pct") or rec.get("sales_growth_5y")
+    sg3     = _first_valid(rec.get("sales_growth_pct"), rec.get("sales_growth_5y"))
     sg3_val = float(sg3) if sg3 is not None else None
     if sg3_val is not None:
         score += min(12.0, max(0.0, sg3_val * 0.20))
 
-    opm = rec.get("opm") if rec.get("opm") is not None else rec.get("net_profit_margin")
+    # OPM only — do NOT fall back to net_profit_margin.
+    # NPM is after interest & tax, so it is materially lower than OPM and
+    # would artificially deflate the score.  Omit the 5 pts when OPM is
+    # unavailable; that is preferable to an unfair comparison.
+    opm = rec.get("opm")
     if opm is not None:
         score += min(5.0, max(0.0, float(opm) * 0.20))
 
@@ -261,7 +274,9 @@ def _sme_quality_score(rec: dict) -> float:
     if roce is not None:
         score += min(10.0, max(0.0, float(roce) * 0.25))
 
-    roe_ref = rec.get("roe") or rec.get("roe_5y") or rec.get("roe_10y")
+    # Use _first_valid so a genuine ROE of 0 is not skipped in favour of
+    # a historical average — consistent with _passes_sme_gates().
+    roe_ref = _first_valid(rec.get("roe"), rec.get("roe_5y"), rec.get("roe_10y"))
     if roe_ref is not None:
         score += min(5.0, max(0.0, float(roe_ref) * 0.20))
 
@@ -448,9 +463,10 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
             pass
 
     if mc and cfo is not None:
-        mc_inr2 = float(mc) * 1e7
-        if mc_inr2 > 0:
-            result["cfo_yield"] = round(float(cfo) * 1e7 / mc_inr2 * 100, 2)
+        mc_f = float(mc)
+        if mc_f > 0:
+            # cfo and mc are both in crores — same units → straight ratio × 100
+            result["cfo_yield"] = round(float(cfo) / mc_f * 100, 2)
 
     if cfo is not None and pe and float(pe) > 0 and mc and float(mc) > 0:
         net_profit_est = float(mc) / float(pe)
