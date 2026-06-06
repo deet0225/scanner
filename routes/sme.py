@@ -666,9 +666,17 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
     if stale and not ss._sme_bg_running:
         ss._sme_bg_running = True
         ss._sme_cancel.clear()
+        # Prioritise: unknown/previously-passed tickers first, known-fail (_gf) last.
+        # This mirrors the same pattern used in fundamentals.py so that promising stocks
+        # get their data refreshed in the first batch rather than being buried behind
+        # the large volume of gate-failing SME tickers.
+        priority_first = sorted(
+            stale,
+            key=lambda t: 1 if ss._sme_fund_data.get(t, {}).get("_gf") else 0,
+        )
         gen = ss._sme_generation
 
-        async def _sme_bg_task(tickers=stale, g=gen):
+        async def _sme_bg_task(tickers=priority_first, g=gen):
             try:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, _sme_bg_worker, tickers, g)
