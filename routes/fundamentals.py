@@ -64,20 +64,23 @@ def _fund_cache_load() -> None:
         if _FUND_CACHE_FILE.exists():
             ss._fund_data = json.loads(_FUND_CACHE_FILE.read_text(encoding="utf-8"))
             invalidated = 0
+            # Only invalidate entries that have NO useful fundamental data at all.
+            # Previous versions used strict three-group checks (basic/enhanced/cashflow),
+            # but that perpetually invalidated financial-sector stocks (banks, NBFCs,
+            # insurance) on every restart because they legitimately lack current_ratio,
+            # cash_from_operations and cfo_yield on Screener.in — causing repeat
+            # downloads that returned the exact same partial result every time.
+            # Entries with partial data will be re-downloaded naturally when their
+            # 48 h TTL expires; there is no need to force it at startup.
+            _USEFUL_FIELDS = (
+                "roce", "roe", "roe_5y",
+                "profit_growth_3y", "profit_growth_5y",
+                "sales_growth_pct", "sales_growth_5y",
+                "market_cap_cr", "current_price",
+            )
             for entry in ss._fund_data.values():
                 if isinstance(entry, dict) and entry.get("_ts", 0) > 0:
-                    missing_basic    = "roce" not in entry
-                    missing_enhanced = not any(k in entry for k in
-                                               ("fii_holding", "current_price", "peg_ratio"))
-                    missing_cashflow = not any(k in entry for k in
-                                               ("current_ratio", "cash_from_operations", "cfo_yield"))
-                    # NOTE: opm / net_profit_margin are display-only fields that are
-                    # legitimately absent for financial-sector companies (banks, NBFCs,
-                    # insurance).  Invalidating on their absence forced a full re-download
-                    # of every financial stock on every restart — causing screener.in
-                    # rate-limiting on Render's fixed IP (the repeated local-vs-Render
-                    # discrepancy).  Only the three structural checks above are used.
-                    if missing_basic or missing_enhanced or missing_cashflow:
+                    if not any(k in entry for k in _USEFUL_FIELDS):
                         entry["_ts"] = 0
                         invalidated += 1
             logger.info("Fundamentals disk cache loaded: %d entries (%d invalidated)",
