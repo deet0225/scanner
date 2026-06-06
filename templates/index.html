@@ -3078,7 +3078,7 @@ function fundLoad(force, _retries) {
         'Cache: ' + fresh + '/' + total + ' tickers' + bgMsg + completedMsg;
 
       // Render whatever is available now (may be partial on first load)
-      renderFundamentals(j.stocks || []);
+      renderFundamentals(j.stocks || [], j.bg_running);
 
       // Always keep polling while background worker is active — this is what
       // drives the live progress bar and table updates as more tickers finish.
@@ -3116,15 +3116,26 @@ function _fundGrade(score) {
   return '<span class="fund-grade fund-grade-d">D</span>';
 }
 
-function renderFundamentals(stocks) {
+function renderFundamentals(stocks, bgRunning) {
   var tbody = document.getElementById('fund-results-body');
   if (!stocks || !stocks.length) {
-    tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' +
-      '<i class="bi bi-gem fs-2 d-block mb-2"></i>' +
-      '<strong>Downloading fundamental data…</strong><br>' +
-      '<small style="color:var(--text-muted);">Progress bar above shows download status.<br>' +
-      'Only stale/missing tickers are fetched — cached data is reused.<br>' +
-      'Table will populate automatically as data arrives — no action needed.</small></div></td></tr>';
+    var msg;
+    if (bgRunning) {
+      msg =
+        '<div class="spinner-border text-warning mb-3" style="width:2rem;height:2rem;"></div>' +
+        '<br><strong>Downloading fundamental data&hellip;</strong><br>' +
+        '<small style="color:var(--text-muted);">Fetching data from Screener.in for N500 + Microcap250 tickers.<br>' +
+        'Only stale/missing tickers are fetched — cached data is reused.<br>' +
+        'Results will appear automatically as data arrives — progress bar above shows status.</small>';
+    } else {
+      msg =
+        '<i class="bi bi-gem fs-2 d-block mb-2"></i>' +
+        '<strong>No stocks passed all fundamental gates yet</strong><br>' +
+        '<small style="color:var(--text-muted);">' +
+        'Gates: ROCE &ge;12% &middot; ROE &ge;12% &middot; D/E &le;1.0 &middot; Profit Growth &ge;8% &middot; Sales Growth &ge;5% &middot; Score &ge;50<br>' +
+        'Use the Refresh button to force a fresh download.</small>';
+    }
+    tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' + msg + '</div></td></tr>';
     return;
   }
   var medals = ['🥇','🥈','🥉'];
