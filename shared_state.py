@@ -130,6 +130,7 @@ _sme_bg_running: bool = False
 _sme_result_cache_body: "dict | None" = None
 _sme_result_cache_valid: bool = False
 _sme_universe: dict = {}
+_sme_last_download_date: str = ""   # IST date "YYYY-MM-DD" of last completed download
 
 # ---------------------------------------------------------------------------
 # Misc flags

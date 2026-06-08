@@ -1293,7 +1293,15 @@ function switchTab(name) {
   }
   if (name === 'sectors')   sectorsLoad();
   if (name === 'fund')      fundLoad();
-  if (name === 'sme')       smeLoad();
+  if (name === 'sme') {
+    // Skip fetch on tab-switch if data is already loaded AND no background download is running.
+    // This prevents repeated re-downloads when the user switches browser tabs or app tabs.
+    if (smeLoaded && !_smeLastBgRunning) {
+      // Nothing to do — the table is still populated from the previous load.
+    } else {
+      smeLoad();
+    }
+  }
   if (name === 'momentum')  momLoad();
   if (name === 'morningmom') mmomLoad();
 }
@@ -2232,7 +2240,8 @@ function renderMorningMom(stocks, meta) {
 
 // ══════════════════════════ SME FUNDAMENTALS ══════════════════════════════
 var smeLoaded = false;
-var _smePollTimer = null;   // handle for the active auto-poll setTimeout
+var _smePollTimer = null;       // handle for the active auto-poll setTimeout
+var _smeLastBgRunning = false;  // was bg_running true on the last response?
 
 function _smeUpdateProgress(j) {
   var wrap  = document.getElementById('sme-progress-wrap');
@@ -2280,6 +2289,7 @@ function smeLoad(forceRefresh, _retries) {
       if (btn)    btn.classList.remove('scanning');
       if (loadEl) loadEl.style.display = 'none';
       smeLoaded = true;
+      _smeLastBgRunning = !!j.bg_running;
 
       document.getElementById('sme-count').textContent     = j.total || 0;
       document.getElementById('sme-result-count').textContent = (j.stocks || []).length + ' stocks';
@@ -2296,7 +2306,10 @@ function smeLoad(forceRefresh, _retries) {
         : (j.stale_count > 0
           ? ' &middot; <span style="color:var(--text-muted);">' + j.stale_count + ' stale</span>'
           : ' &middot; <span style="color:var(--green);">✓ all fresh</span>');
-      document.getElementById('sme-source').innerHTML = 'Cache: ' + fresh + '/' + total + bgMsg;
+      var dateLabel = j.cache_date
+        ? ' &middot; <span style="color:var(--text-muted);" title="Last full download date (IST)">Updated: ' + j.cache_date + '</span>'
+        : '';
+      document.getElementById('sme-source').innerHTML = 'Cache: ' + fresh + '/' + total + bgMsg + dateLabel;
 
       renderSME(j.stocks || [], j.bg_running);
 

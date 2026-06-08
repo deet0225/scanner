@@ -25,6 +25,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 import cache as _ohlcv_cache
+from cache import _ist_today as _sme_ist_today
 import shared_state as ss
 from routes.utils import _compute_stop_loss_from_cache
 
@@ -65,6 +66,8 @@ def _sme_cache_load() -> None:
             ss._sme_fund_data = json.loads(
                 _SME_FUND_CACHE_FILE.read_text(encoding="utf-8")
             )
+            # Extract metadata key (not a ticker entry)
+            ss._sme_last_download_date = ss._sme_fund_data.pop("__download_date__", "")
             invalidated = 0
             # Only invalidate entries that have NO useful fundamental data at all.
             # Many SME/Emerge stocks legitimately lack CFO or OPM data on Screener.in;
@@ -80,8 +83,8 @@ def _sme_cache_load() -> None:
                     if not any(k in entry for k in _USEFUL_FIELDS):
                         entry["_ts"] = 0
                         invalidated += 1
-            logger.info("SME fund cache loaded: %d entries (%d invalidated)",
-                        len(ss._sme_fund_data), invalidated)
+            logger.info("SME fund cache loaded: %d entries (%d invalidated), last_download_date=%s",
+                        len(ss._sme_fund_data), invalidated, ss._sme_last_download_date or "none")
         else:
             ss._sme_fund_data = {}
     except Exception as exc:
@@ -94,8 +97,11 @@ def _sme_cache_save() -> None:
     ss._sme_result_cache_valid = False
     try:
         _SME_FUND_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # Include the download-date metadata so it survives server restarts
+        data_to_save = dict(ss._sme_fund_data)
+        data_to_save["__download_date__"] = ss._sme_last_download_date or str(_sme_ist_today())
         _SME_FUND_CACHE_FILE.write_text(
-            json.dumps(ss._sme_fund_data, ensure_ascii=False), encoding="utf-8"
+            json.dumps(data_to_save, ensure_ascii=False), encoding="utf-8"
         )
     except Exception as exc:
         logger.warning("SME fund cache save failed: %s", exc)
@@ -626,6 +632,8 @@ def _sme_bg_worker(tickers: list, generation: int = 0) -> None:
 
     _sme_cache_save()
     ss._sme_last_completed_ts = time.time()
+    ss._sme_last_download_date = str(_sme_ist_today())   # mark today's IST date as downloaded
+    _sme_cache_save()   # re-save to persist the updated download date
     logger.info("SME BG done (gen %d): %d fetched, %d changed, %d skipped",
                 generation, total_refreshed, total_changed, total_skipped)
     ss._sme_bg_running = False
@@ -654,12 +662,23 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
             if t in ss._sme_fund_data:
                 ss._sme_fund_data[t]["_ts"] = 0.0
         ss._sme_result_cache_valid = False
+        ss._sme_last_download_date = ""   # reset date guard so re-download is allowed
 
-    stale = [
-        t for t in all_tickers
-        if now - ss._sme_fund_data.get(t, {}).get("_ts", 0)
-           > (_SME_FAIL_TTL if ss._sme_fund_data.get(t, {}).get("_gf") else _SME_FUND_CACHE_TTL)
-    ]
+    # Date-based daily guard: if we already completed a full download today (IST),
+    # treat all existing tickers as fresh — only pick up truly new tickers (never fetched).
+    # This prevents repeated re-downloads when the user switches browser tabs or app tabs.
+    today_ist = str(_sme_ist_today())
+    already_downloaded_today = (ss._sme_last_download_date == today_ist) and not refresh
+
+    if already_downloaded_today:
+        # Only include tickers that have NEVER been fetched (no _ts at all)
+        stale = [t for t in all_tickers if not ss._sme_fund_data.get(t, {}).get("_ts", 0)]
+    else:
+        stale = [
+            t for t in all_tickers
+            if now - ss._sme_fund_data.get(t, {}).get("_ts", 0)
+               > (_SME_FAIL_TTL if ss._sme_fund_data.get(t, {}).get("_gf") else _SME_FUND_CACHE_TTL)
+        ]
     if not stale and not ss._sme_bg_running and ss._sme_last_completed_ts == 0:
         ss._sme_last_completed_ts = time.time()
 
@@ -696,6 +715,7 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
         live_body["stale_count"]       = len(stale)
         live_body["cache_fresh"]       = cache_fresh
         live_body["last_completed_ts"] = ss._sme_last_completed_ts
+        live_body["cache_date"]        = ss._sme_last_download_date
         return JSONResponse(live_body)
 
     combined = []
@@ -771,6 +791,7 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
         "bg_running":         ss._sme_bg_running,
         "stale_count":        len(stale),
         "last_completed_ts":  ss._sme_last_completed_ts,
+        "cache_date":         ss._sme_last_download_date,   # IST date of last full download
         "nse_count":          nse_count,
         "bse_count":          bse_count,
         "gates": {
@@ -808,6 +829,7 @@ async def sme_fundamentals_cache_clear() -> JSONResponse:
     ss._sme_result_cache_valid = False
     ss._sme_result_cache_body  = None
     ss._sme_bg_running         = False
+    ss._sme_last_download_date = ""   # reset date guard so next visit re-downloads
 
     screener_cleared = 0
     try:
