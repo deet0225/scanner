@@ -8,7 +8,7 @@ check to filter out fake/junk companies common in the SME segment.
 Cache: cache/sme/<TICKER>.json — one file per stock (multi-worker safe).
        cache/sme/_meta.json    — download-date metadata.
 On first startup the old single-file cache/sme_fundamentals_data.json is
-automatically migrated to the new per-stock layout.
+automatically migrated to the new per-stock layout and then deleted.
 
 API routes
 ----------
@@ -74,7 +74,7 @@ def _sme_cache_load() -> None:
 
     Reads individual per-stock JSON files from cache/sme/.
     On first run, auto-migrates the legacy single-file
-    cache/sme_fundamentals_data.json into the new layout.
+    cache/sme_fundamentals_data.json into the new layout and deletes it.
     """
     try:
         _SME_FUND_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -98,8 +98,8 @@ def _sme_cache_load() -> None:
                             json.dumps(entry, ensure_ascii=False), encoding="utf-8"
                         )
                         migrated += 1
-                # Rename old file so we don't migrate again
-                _OLD_CACHE.rename(_OLD_CACHE.with_suffix(".json.bak"))
+                # Delete old file so we don't migrate again
+                _OLD_CACHE.unlink(missing_ok=True)
                 logger.info("SME: migration complete — %d entries written", migrated)
             except Exception as exc:
                 logger.warning("SME: migration from old cache failed: %s", exc)
@@ -617,8 +617,11 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
     result["_ts"] = time.time()
     with ss._sme_fund_lock:
         ss._sme_fund_data[ticker] = result
-    # Persist immediately — individual file write is worker-safe
-    _sme_ticker_save(ticker, result)
+    # Only rewrite the per-stock file when fundamental data actually changed.
+    # _ts-only updates are batched and persisted at the end of each bg-worker
+    # cycle via _sme_cache_save(), avoiding unnecessary disk writes.
+    if content_changed:
+        _sme_ticker_save(ticker, result)
     return result, content_changed
 
 
@@ -668,7 +671,8 @@ def _sme_bg_worker(tickers: list, generation: int = 0) -> None:
         if ss._sme_cancel.is_set() or ss._sme_generation != generation:
             logger.info("SME BG (gen %d): stopping after %d/%d tickers",
                         generation, total_refreshed, len(stale))
-            _sme_meta_save()
+            # Persist _ts for any tickers already processed in this run
+            _sme_cache_save()
             ss._sme_bg_running = False
             return
 
@@ -711,20 +715,21 @@ def _sme_bg_worker(tickers: list, generation: int = 0) -> None:
         total_changed   += changed_in_batch
         end = min(batch_start + BATCH_SIZE, len(stale))
         if changed_in_batch:
-            # Individual ticker files were already saved inside _sme_fund_refresh_ticker;
-            # only update the metadata file here (fast — single small write).
+            # Ticker files for changed entries were already written inside
+            # _sme_fund_refresh_ticker; just update metadata here.
             _sme_meta_save()
-            logger.info("SME BG: %d/%d — %d fetched, %d changed → meta saved",
+            logger.info("SME BG: %d/%d — %d fetched, %d data-changed → meta saved",
                         end, len(stale), fetched_in_batch, changed_in_batch)
         else:
-            logger.info("SME BG: %d/%d — %d fetched, no content changes",
+            logger.info("SME BG: %d/%d — %d fetched, no data changes",
                         end, len(stale), fetched_in_batch)
 
-    _sme_meta_save()
+    # End of cycle: persist _ts for ALL tickers (including those whose data didn't
+    # change during a refresh).  This prevents re-downloads on the next server restart.
     ss._sme_last_completed_ts = time.time()
-    ss._sme_last_download_date = str(_sme_ist_today())   # mark today's IST date as downloaded
-    _sme_cache_save()   # re-save to persist the updated download date
-    logger.info("SME BG done (gen %d): %d fetched, %d changed, %d skipped",
+    ss._sme_last_download_date = str(_sme_ist_today())
+    _sme_cache_save()   # bulk write — writes each ticker file + _meta.json
+    logger.info("SME BG done (gen %d): %d fetched, %d data-changed, %d skipped",
                 generation, total_refreshed, total_changed, total_skipped)
     ss._sme_bg_running = False
 
@@ -748,26 +753,26 @@ async def get_sme_fundamentals(refresh: int = 0) -> JSONResponse:
     now = time.time()
 
     if refresh:
-        for t in all_tickers:
-            if t in ss._sme_fund_data:
-                ss._sme_fund_data[t]["_ts"] = 0.0
+        # Refresh: queue every ticker for re-verification against Screener.in.
+        # Files are only rewritten when the actual data changes (see _sme_bg_worker).
+        with ss._sme_fund_lock:
+            for t in all_tickers:
+                if t in ss._sme_fund_data:
+                    ss._sme_fund_data[t]["_ts"] = 0.0
         ss._sme_result_cache_valid = False
-        ss._sme_last_download_date = ""   # reset date guard so re-download is allowed
-
-    # Date-based daily guard: if we already completed a full download today (IST),
-    # treat all existing tickers as fresh — only pick up truly new tickers (never fetched).
-    # This prevents repeated re-downloads when the user switches browser tabs or app tabs.
-    today_ist = str(_sme_ist_today())
-    already_downloaded_today = (ss._sme_last_download_date == today_ist) and not refresh
-
-    if already_downloaded_today:
-        # Only include tickers that have NEVER been fetched (no _ts at all)
-        stale = [t for t in all_tickers if not ss._sme_fund_data.get(t, {}).get("_ts", 0)]
+        ss._sme_last_download_date = ""   # reset so the full run is recorded again
+        stale = list(all_tickers)
     else:
+        # Normal load: local files were already loaded at startup.
+        # Only queue tickers that have NO local file yet (never fetched),
+        # or gate-failed tickers that are due for a retry.
         stale = [
             t for t in all_tickers
-            if now - ss._sme_fund_data.get(t, {}).get("_ts", 0)
-               > (_SME_FAIL_TTL if ss._sme_fund_data.get(t, {}).get("_gf") else _SME_FUND_CACHE_TTL)
+            if not ss._sme_fund_data.get(t, {}).get("_ts", 0)          # no local file
+            or (
+                ss._sme_fund_data.get(t, {}).get("_gf")                 # previously gate-failed
+                and (now - ss._sme_fund_data.get(t, {}).get("_ts", 0)) >= _SME_FAIL_TTL
+            )
         ]
     if not stale and not ss._sme_bg_running and ss._sme_last_completed_ts == 0:
         ss._sme_last_completed_ts = time.time()
