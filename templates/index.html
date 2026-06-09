@@ -1292,7 +1292,15 @@ function switchTab(name) {
     }
   }
   if (name === 'sectors')   sectorsLoad();
-  if (name === 'fund')      fundLoad();
+  if (name === 'fund') {
+    // Skip fetch on tab-switch if data is already loaded AND no background download is running.
+    // This prevents repeated re-downloads when the user switches browser tabs or app tabs.
+    if (_fundLoaded && !_fundLastBgRunning) {
+      // Nothing to do — the table is still populated from the previous load.
+    } else {
+      fundLoad();
+    }
+  }
   if (name === 'sme') {
     // Skip fetch on tab-switch if data is already loaded AND no background download is running.
     // This prevents repeated re-downloads when the user switches browser tabs or app tabs.
@@ -2268,6 +2276,23 @@ function smeLoad(forceRefresh, _retries) {
   var btn    = document.getElementById('sme-refresh-btn');
   var loadEl = document.getElementById('sme-loading-msg');
   if (btn)    btn.classList.add('scanning');
+
+  // ── IMMEDIATE: render last locally-cached result before the API round-trip ──
+  // Show whatever was stored from the previous successful fetch so the user
+  // sees data instantly, even before the network call completes.
+  if (!forceRefresh && _retries === 0) {
+    try {
+      var _smeCached = localStorage.getItem('sme_cached_result');
+      if (_smeCached) {
+        var _smeCachedData = JSON.parse(_smeCached);
+        if (_smeCachedData && _smeCachedData.stocks && _smeCachedData.stocks.length) {
+          renderSME(_smeCachedData.stocks, false);
+          smeLoaded = true;
+        }
+      }
+    } catch(e) {}
+  }
+
   if (loadEl) loadEl.style.display = 'flex';
 
   // Clear any outstanding poll timer so we don't stack timers
@@ -2310,6 +2335,13 @@ function smeLoad(forceRefresh, _retries) {
         ? ' &middot; <span style="color:var(--text-muted);" title="Last full download date (IST)">Updated: ' + j.cache_date + '</span>'
         : '';
       document.getElementById('sme-source').innerHTML = 'Cache: ' + fresh + '/' + total + bgMsg + dateLabel;
+
+      // Persist result to localStorage so next tab visit can render immediately
+      try {
+        if (j.stocks && j.stocks.length) {
+          localStorage.setItem('sme_cached_result', JSON.stringify({stocks: j.stocks}));
+        }
+      } catch(e) {}
 
       renderSME(j.stocks || [], j.bg_running);
 
@@ -3010,6 +3042,7 @@ function closeSectorModal() {
 
 // ══════════════════════════ FUNDAMENTALS TAB ══════════════════════════════
 var _fundLoaded = false;
+var _fundLastBgRunning = false;  // was bg_running true on the last response?
 var _fundPollTimer = null;   // handle for the active auto-poll setTimeout
 
 function _fundUpdateProgress(j) {
@@ -3037,6 +3070,23 @@ function fundLoad(force, _retries) {
   var btn = document.getElementById('fund-refresh-btn');
   if (btn) btn.classList.add('scanning');
   var loadEl = document.getElementById('fund-loading-msg');
+
+  // ── IMMEDIATE: render last locally-cached result before the API round-trip ──
+  // Show whatever was stored from the previous successful fetch so the user
+  // sees data instantly, even before the network call completes.
+  if (!force && _retries === 0) {
+    try {
+      var _fundCachedRaw = localStorage.getItem('fund_cached_result');
+      if (_fundCachedRaw) {
+        var _fundCachedData = JSON.parse(_fundCachedRaw);
+        if (_fundCachedData && _fundCachedData.stocks && _fundCachedData.stocks.length) {
+          renderFundamentals(_fundCachedData.stocks, false);
+          _fundLoaded = true;
+        }
+      }
+    } catch(e) {}
+  }
+
   if (loadEl) { loadEl.style.display = 'block'; }
   // Only blank the table on explicit force-refresh; silent polls keep existing rows visible
   if (force && _retries === 0) {
@@ -3063,6 +3113,7 @@ function fundLoad(force, _retries) {
       if (btn) btn.classList.remove('scanning');
       if (loadEl) loadEl.style.display = 'none';
       _fundLoaded = true;
+      _fundLastBgRunning = !!j.bg_running;
       document.getElementById('fund-count').textContent = j.total || 0;
       document.getElementById('fund-result-count').textContent =
         (j.stocks || []).length + ' stocks (of ' + (j.total_scored || 0) + ' scored)';
@@ -3089,6 +3140,13 @@ function fundLoad(force, _retries) {
       }
       document.getElementById('fund-source').innerHTML =
         'Cache: ' + fresh + '/' + total + ' tickers' + bgMsg + completedMsg;
+
+      // Persist result to localStorage so next tab visit can render immediately
+      try {
+        if (j.stocks && j.stocks.length) {
+          localStorage.setItem('fund_cached_result', JSON.stringify({stocks: j.stocks}));
+        }
+      } catch(e) {}
 
       // Render whatever is available now (may be partial on first load)
       renderFundamentals(j.stocks || [], j.bg_running);
