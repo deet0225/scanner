@@ -120,6 +120,7 @@ def _sme_cache_load() -> None:
             "market_cap_cr", "current_price",
         )
         loaded = invalidated = 0
+        _now = time.time()
         for fpath in _SME_FUND_CACHE_DIR.glob("*.json"):
             if fpath.name.startswith("_"):
                 continue  # skip _meta.json and any other internal files
@@ -128,8 +129,17 @@ def _sme_cache_load() -> None:
                 entry = json.loads(fpath.read_text(encoding="utf-8"))
                 if isinstance(entry, dict) and entry.get("_ts", 0) > 0:
                     if not any(k in entry for k in _USEFUL_FIELDS):
-                        entry["_ts"] = 0
-                        invalidated += 1
+                        # Only invalidate if the entry is already old enough to
+                        # be re-downloaded anyway.  Tickers that were fetched
+                        # recently but returned no data (e.g. new listings, BSE
+                        # SME tickers not yet on Screener.in) should be treated
+                        # as "fresh" until their TTL expires — resetting _ts on
+                        # every restart re-queues all of them immediately and
+                        # inflates the "downloading N tickers" counter.
+                        ttl = _SME_FAIL_TTL if entry.get("_gf") else _SME_FUND_CACHE_TTL
+                        if (_now - entry["_ts"]) >= ttl:
+                            entry["_ts"] = 0
+                            invalidated += 1
                 ss._sme_fund_data[ticker] = entry
                 loaded += 1
             except Exception as exc:
@@ -700,7 +710,15 @@ def _sme_bg_worker(tickers: list, generation: int = 0) -> None:
                     )
                     with ss._sme_fund_lock:
                         entry = ss._sme_fund_data.get(t, {})
-                        if key_coverage >= 3 and not _passes_sme_gates(result):
+                        if key_coverage == 0:
+                            # Screener.in returned no fundamental data at all —
+                            # new listing, BSE SME ticker not yet on Screener, etc.
+                            # Mark as gate-failed so the longer 72 h retry TTL
+                            # applies; between retries the ticker is counted as
+                            # "fresh" and doesn't bloat the download queue.
+                            entry["_gf"] = True
+                            _sme_ticker_save(t, entry)   # persist _gf immediately
+                        elif key_coverage >= 3 and not _passes_sme_gates(result):
                             entry["_gf"] = True
                         else:
                             entry.pop("_gf", None)

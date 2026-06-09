@@ -78,11 +78,20 @@ def _fund_cache_load() -> None:
                 "sales_growth_pct", "sales_growth_5y",
                 "market_cap_cr", "current_price",
             )
+            _now = time.time()
             for entry in ss._fund_data.values():
                 if isinstance(entry, dict) and entry.get("_ts", 0) > 0:
                     if not any(k in entry for k in _USEFUL_FIELDS):
-                        entry["_ts"] = 0
-                        invalidated += 1
+                        # Only invalidate if the entry is already old enough to
+                        # be re-downloaded anyway.  Tickers fetched recently but
+                        # with no data (e.g. new listings not yet on Screener.in)
+                        # should stay "fresh" until their TTL expires — resetting
+                        # _ts unconditionally re-queues them on every restart and
+                        # inflates the "downloading N tickers" counter.
+                        ttl = _FUND_FAIL_TTL if entry.get("_gf") else _FUND_CACHE_TTL
+                        if (_now - entry["_ts"]) >= ttl:
+                            entry["_ts"] = 0
+                            invalidated += 1
             logger.info("Fundamentals disk cache loaded: %d entries (%d invalidated)",
                         len(ss._fund_data), invalidated)
         else:
@@ -450,7 +459,14 @@ def _fund_bg_worker(tickers: list, generation: int = 0) -> None:
                     )
                     with ss._fund_data_lock:
                         entry = ss._fund_data.get(t, {})
-                        if key_coverage >= 3 and not _passes_fund_gates(result):
+                        if key_coverage == 0:
+                            # Screener.in returned no fundamental data at all —
+                            # new listing or ticker not yet on Screener.  Mark as
+                            # gate-failed so the longer 72 h retry TTL applies;
+                            # between retries the ticker counts as "fresh" and
+                            # doesn't bloat the download queue.
+                            entry["_gf"] = True
+                        elif key_coverage >= 3 and not _passes_fund_gates(result):
                             entry["_gf"] = True
                         else:
                             entry.pop("_gf", None)
