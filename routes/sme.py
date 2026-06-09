@@ -5,7 +5,10 @@ High-growth SME stocks ranked by a growth-acceleration score.
 Uses STRICTER growth gates (25% 3Y CAGR) and a composite cash quality
 check to filter out fake/junk companies common in the SME segment.
 
-Cache: cache/sme_fundamentals_data.json — separate from main fund cache.
+Cache: cache/sme/<TICKER>.json — one file per stock (multi-worker safe).
+       cache/sme/_meta.json    — download-date metadata.
+On first startup the old single-file cache/sme_fundamentals_data.json is
+automatically migrated to the new per-stock layout.
 
 API routes
 ----------
@@ -33,11 +36,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
-# Cache file + TTL constants
+# Cache directory + TTL constants
 # ---------------------------------------------------------------------------
-_SME_FUND_CACHE_FILE  = _PL("cache/sme_fundamentals_data.json")
+_SME_FUND_CACHE_DIR   = _PL("cache/sme")          # per-stock JSON files live here
+_SME_FUND_META_FILE   = _PL("cache/sme/_meta.json")  # stores download-date metadata
 _SME_FUND_CACHE_TTL   = 48 * 3600
 _SME_FAIL_TTL         = 72 * 3600
+
+
+def _sme_ticker_file(ticker: str) -> _PL:
+    """Return the Path for an individual ticker's cache JSON file."""
+    safe = ticker.replace("/", "_").replace("\\", "_")
+    return _SME_FUND_CACHE_DIR / f"{safe}.json"
 
 # ---------------------------------------------------------------------------
 # SME hard gate thresholds (stricter on growth, relaxed on debt)
@@ -60,49 +70,125 @@ _SME_MIN_KEY_FIELDS   =  2
 # ---------------------------------------------------------------------------
 
 def _sme_cache_load() -> None:
-    """Load SME fundamentals disk cache into memory at startup."""
+    """Load SME fundamentals disk cache into memory at startup.
+
+    Reads individual per-stock JSON files from cache/sme/.
+    On first run, auto-migrates the legacy single-file
+    cache/sme_fundamentals_data.json into the new layout.
+    """
     try:
-        if _SME_FUND_CACHE_FILE.exists():
-            ss._sme_fund_data = json.loads(
-                _SME_FUND_CACHE_FILE.read_text(encoding="utf-8")
-            )
-            # Extract metadata key (not a ticker entry)
-            ss._sme_last_download_date = ss._sme_fund_data.pop("__download_date__", "")
-            invalidated = 0
-            # Only invalidate entries that have NO useful fundamental data at all.
-            # Many SME/Emerge stocks legitimately lack CFO or OPM data on Screener.in;
-            # invalidating those on every restart causes perpetual re-downloads with no results.
-            _USEFUL_FIELDS = (
-                "roce", "roe", "roe_5y",
-                "profit_growth_3y", "profit_growth_5y",
-                "sales_growth_pct", "sales_growth_5y",
-                "market_cap_cr", "current_price",
-            )
-            for entry in ss._sme_fund_data.values():
+        _SME_FUND_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+        # ── One-time migration from old single-file cache ──────────────────
+        _OLD_CACHE = _PL("cache/sme_fundamentals_data.json")
+        if _OLD_CACHE.exists():
+            logger.info("SME: migrating old single-file cache → per-stock files…")
+            try:
+                old_data = json.loads(_OLD_CACHE.read_text(encoding="utf-8"))
+                download_date = old_data.pop("__download_date__", "")
+                if download_date:
+                    _SME_FUND_META_FILE.write_text(
+                        json.dumps({"download_date": download_date}, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                migrated = 0
+                for ticker, entry in old_data.items():
+                    if isinstance(entry, dict):
+                        _sme_ticker_file(ticker).write_text(
+                            json.dumps(entry, ensure_ascii=False), encoding="utf-8"
+                        )
+                        migrated += 1
+                # Rename old file so we don't migrate again
+                _OLD_CACHE.rename(_OLD_CACHE.with_suffix(".json.bak"))
+                logger.info("SME: migration complete — %d entries written", migrated)
+            except Exception as exc:
+                logger.warning("SME: migration from old cache failed: %s", exc)
+
+        # ── Load metadata (download date) ──────────────────────────────────
+        if _SME_FUND_META_FILE.exists():
+            try:
+                meta = json.loads(_SME_FUND_META_FILE.read_text(encoding="utf-8"))
+                ss._sme_last_download_date = meta.get("download_date", "")
+            except Exception:
+                pass
+
+        # ── Load per-stock files ───────────────────────────────────────────
+        _USEFUL_FIELDS = (
+            "roce", "roe", "roe_5y",
+            "profit_growth_3y", "profit_growth_5y",
+            "sales_growth_pct", "sales_growth_5y",
+            "market_cap_cr", "current_price",
+        )
+        loaded = invalidated = 0
+        for fpath in _SME_FUND_CACHE_DIR.glob("*.json"):
+            if fpath.name.startswith("_"):
+                continue  # skip _meta.json and any other internal files
+            ticker = fpath.stem
+            try:
+                entry = json.loads(fpath.read_text(encoding="utf-8"))
                 if isinstance(entry, dict) and entry.get("_ts", 0) > 0:
                     if not any(k in entry for k in _USEFUL_FIELDS):
                         entry["_ts"] = 0
                         invalidated += 1
-            logger.info("SME fund cache loaded: %d entries (%d invalidated), last_download_date=%s",
-                        len(ss._sme_fund_data), invalidated, ss._sme_last_download_date or "none")
-        else:
-            ss._sme_fund_data = {}
+                ss._sme_fund_data[ticker] = entry
+                loaded += 1
+            except Exception as exc:
+                logger.debug("SME: failed to load %s: %s", fpath.name, exc)
+
+        logger.info(
+            "SME fund cache loaded: %d entries (%d invalidated), last_download_date=%s",
+            loaded, invalidated, ss._sme_last_download_date or "none",
+        )
     except Exception as exc:
         logger.warning("Could not load SME fund cache: %s", exc)
         ss._sme_fund_data = {}
 
 
+def _sme_ticker_save(ticker: str, data: dict) -> None:
+    """Atomically persist a single ticker's data to its own cache file.
+
+    Writing one small JSON file per ticker means concurrent workers never
+    contend on the same file — each ticker is its own isolated write.
+    """
+    try:
+        _SME_FUND_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _sme_ticker_file(ticker).write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception as exc:
+        logger.debug("SME ticker save failed for %s: %s", ticker, exc)
+
+
+def _sme_meta_save() -> None:
+    """Persist download-date metadata to cache/sme/_meta.json."""
+    try:
+        _SME_FUND_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _SME_FUND_META_FILE.write_text(
+            json.dumps(
+                {"download_date": ss._sme_last_download_date or str(_sme_ist_today())},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning("SME meta save failed: %s", exc)
+
+
 def _sme_cache_save() -> None:
-    """Persist in-memory SME cache to disk."""
+    """Bulk-persist entire in-memory SME cache to disk (one file per ticker).
+
+    Prefer calling _sme_ticker_save() for individual tickers where possible
+    so that only the changed file is written.  This bulk variant is kept for
+    compatibility and is called at the end of a full download cycle.
+    """
     ss._sme_result_cache_valid = False
     try:
-        _SME_FUND_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        # Include the download-date metadata so it survives server restarts
-        data_to_save = dict(ss._sme_fund_data)
-        data_to_save["__download_date__"] = ss._sme_last_download_date or str(_sme_ist_today())
-        _SME_FUND_CACHE_FILE.write_text(
-            json.dumps(data_to_save, ensure_ascii=False), encoding="utf-8"
-        )
+        _SME_FUND_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with ss._sme_fund_lock:
+            items = list(ss._sme_fund_data.items())
+        for ticker, data in items:
+            _sme_ticker_save(ticker, data)
+        _sme_meta_save()
     except Exception as exc:
         logger.warning("SME fund cache save failed: %s", exc)
 
@@ -531,6 +617,8 @@ def _sme_fund_refresh_ticker(ticker: str) -> tuple:
     result["_ts"] = time.time()
     with ss._sme_fund_lock:
         ss._sme_fund_data[ticker] = result
+    # Persist immediately — individual file write is worker-safe
+    _sme_ticker_save(ticker, result)
     return result, content_changed
 
 
@@ -580,7 +668,7 @@ def _sme_bg_worker(tickers: list, generation: int = 0) -> None:
         if ss._sme_cancel.is_set() or ss._sme_generation != generation:
             logger.info("SME BG (gen %d): stopping after %d/%d tickers",
                         generation, total_refreshed, len(stale))
-            _sme_cache_save()
+            _sme_meta_save()
             ss._sme_bg_running = False
             return
 
@@ -623,14 +711,16 @@ def _sme_bg_worker(tickers: list, generation: int = 0) -> None:
         total_changed   += changed_in_batch
         end = min(batch_start + BATCH_SIZE, len(stale))
         if changed_in_batch:
-            _sme_cache_save()
-            logger.info("SME BG: %d/%d — %d fetched, %d changed → saved",
+            # Individual ticker files were already saved inside _sme_fund_refresh_ticker;
+            # only update the metadata file here (fast — single small write).
+            _sme_meta_save()
+            logger.info("SME BG: %d/%d — %d fetched, %d changed → meta saved",
                         end, len(stale), fetched_in_batch, changed_in_batch)
         else:
             logger.info("SME BG: %d/%d — %d fetched, no content changes",
                         end, len(stale), fetched_in_batch)
 
-    _sme_cache_save()
+    _sme_meta_save()
     ss._sme_last_completed_ts = time.time()
     ss._sme_last_download_date = str(_sme_ist_today())   # mark today's IST date as downloaded
     _sme_cache_save()   # re-save to persist the updated download date
@@ -819,13 +909,17 @@ async def sme_fundamentals_cache_clear() -> JSONResponse:
     with ss._sme_fund_lock:
         deleted_count = len(ss._sme_fund_data)
         ss._sme_fund_data.clear()
-    disk_deleted = False
+    disk_deleted = 0
     try:
-        if _SME_FUND_CACHE_FILE.exists():
-            _SME_FUND_CACHE_FILE.unlink()
-            disk_deleted = True
+        if _SME_FUND_CACHE_DIR.exists():
+            for f in _SME_FUND_CACHE_DIR.iterdir():
+                try:
+                    f.unlink()
+                    disk_deleted += 1
+                except Exception as exc:
+                    logger.debug("Could not delete SME cache file %s: %s", f.name, exc)
     except Exception as exc:
-        logger.warning("Could not delete SME fundamentals cache file: %s", exc)
+        logger.warning("Could not clear SME fundamentals cache dir: %s", exc)
     ss._sme_result_cache_valid = False
     ss._sme_result_cache_body  = None
     ss._sme_bg_running         = False
@@ -840,9 +934,8 @@ async def sme_fundamentals_cache_clear() -> JSONResponse:
     except Exception as exc:
         logger.warning("Could not clear ScreenerClient cache (SME): %s", exc)
 
-    logger.info("SME fund cache CLEARED: %d entries, %d Screener cache entries, disk %s",
-                deleted_count, screener_cleared,
-                "deleted" if disk_deleted else "delete-failed")
+    logger.info("SME fund cache CLEARED: %d entries, %d Screener cache entries, %d disk files deleted",
+                deleted_count, screener_cleared, disk_deleted)
     return JSONResponse({
         "reset":            deleted_count,
         "screener_cleared": screener_cleared,
@@ -850,7 +943,7 @@ async def sme_fundamentals_cache_clear() -> JSONResponse:
         "message": (
             f"{deleted_count} SME fundamentals entries cleared, "
             f"{screener_cleared} Screener.in HTML-cache entries cleared, "
-            f"JSON file {'deleted' if disk_deleted else 'could not be deleted'} — "
+            f"{disk_deleted} cache file(s) deleted — "
             "full re-download will start on next tab visit"
         ),
     })
