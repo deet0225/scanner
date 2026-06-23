@@ -660,6 +660,8 @@
     <strong>Quality gates:</strong> Liquidity &ge;3&nbsp;Cr &middot; Prior decline &ge;3% &middot; Volume &ge;1&times; avg
     &nbsp;&mdash;&nbsp;
     <strong>All 750 tickers</strong> (N500 + MC250) &middot; Last 3 bars only (no stale patterns)
+    &nbsp;&mdash;&nbsp;
+    <strong style="color:var(--green);">&#9733;&#9733;&#9733; Showing High-Rating only (Star Score &ge; 65)</strong>
   </div>
 
   <div class="main-card">
@@ -2090,10 +2092,16 @@ function mmomLoad() {
       if (loadEl) loadEl.style.display = 'none';
       _mmomLoaded = true;
 
-      document.getElementById('mmom-count').textContent        = j.total || 0;
-      document.getElementById('mmom-result-count').textContent = (j.stocks || []).length + ' stocks';
-      document.getElementById('mmom-n5-count').textContent     = (j.n500_count || 0) + ' stocks';
-      document.getElementById('mmom-mc-count').textContent     = (j.mc_count   || 0) + ' stocks';
+      // Filter to 3-star (★★★) and above only — score >= 65
+      var allStocks    = j.stocks || [];
+      var filtered     = allStocks.filter(function(s) { return (s.mom_score || 0) >= 65; });
+      var filtN5Count  = filtered.filter(function(s) { return s.from_index === 'Nifty 500'; }).length;
+      var filtMcCount  = filtered.filter(function(s) { return s.from_index === 'Microcap 250'; }).length;
+
+      document.getElementById('mmom-count').textContent        = filtered.length + ' / ' + (j.total || 0);
+      document.getElementById('mmom-result-count').textContent = filtered.length + ' stocks (★★★)';
+      document.getElementById('mmom-n5-count').textContent     = filtN5Count + ' stocks';
+      document.getElementById('mmom-mc-count').textContent     = filtMcCount + ' stocks';
       document.getElementById('mmom-total-mom').textContent = '--';
       document.getElementById('mmom-scan-status').innerHTML    =
         j.status === 'complete' ? '&#10003; Up-to-date' : (j.status || '--');
@@ -2106,10 +2114,11 @@ function mmomLoad() {
           '<span style="color:var(--red);">Day-1 &ge;1% bearish</span> &middot; ' +
           '<span style="color:var(--yellow);">Star &lt;35%</span> &middot; ' +
           '<span style="color:var(--green);">Day-3 &ge;50% pen + body &ge;50%</span> &middot; ' +
-          '<span style="color:var(--text-muted);">Liq 3Cr &middot; Drop-3% &middot; Vol 1&times;</span>';
+          '<span style="color:var(--text-muted);">Liq 3Cr &middot; Drop-3% &middot; Vol 1&times;</span> &middot; ' +
+          '<span style="color:var(--green);font-weight:700;">&#9733;&#9733;&#9733; Score &ge;65 only</span>';
       }
 
-      renderMorningMom(j.stocks || [], j);
+      renderMorningMom(filtered, j);
     })
     .catch(function(err) {
       _mmomScanning = false;
@@ -2141,9 +2150,9 @@ function renderMorningMom(stocks, meta) {
       ? '<i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
         '<strong>Scan error.</strong>'
       : '<i class="bi bi-sunrise fs-2 d-block mb-2" style="color:var(--text-muted);"></i>' +
-        'No Morning Star patterns found in any of the 750 tickers' +
+        'No &#9733;&#9733;&#9733; Morning Star patterns (score &ge; 65) found in 750 tickers' +
         (asOf ? ' for ' + asOf : ' today') + '.<br>' +
-        '<small style="color:var(--text-muted);">The Morning Star is a rare 3-candle reversal &mdash; try a different date or check back after the next session.</small>';
+        '<small style="color:var(--text-muted);">Only high-rating (&starf;&starf;&starf;, score &ge; 65) patterns are shown &mdash; try a different date or check back after the next session.</small>';
     tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' + msg + '</div></td></tr>';
     return;
   }
