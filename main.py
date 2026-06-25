@@ -85,6 +85,7 @@ from routes.morning_momentum import _maybe_run_n500_ms_scan, _maybe_run_mc250_ms
 from routes.fundamentals     import router as fund_router, _fund_cache_load
 from routes.sme              import router as sme_router, _sme_cache_load
 from routes.sector_momentum  import router as sector_router
+from routes.upstox_breakout  import router as upstox_breakout_router
 from routes.misc             import router as misc_router
 scheduler = AsyncIOScheduler()
 # ---------------------------------------------------------------------------
@@ -132,6 +133,7 @@ app.include_router(ms_router)       # Morning Momentum: /api/morning-momentum
 app.include_router(fund_router)     # Fundamentals: /api/fundamentals
 app.include_router(sme_router)      # SME: /api/sme/fundamentals
 app.include_router(sector_router)   # Sector Momentum: /api/sector-momentum /api/sector-stocks
+app.include_router(upstox_breakout_router)  # Upstox Breakout: /api/upstox-breakout
 app.include_router(misc_router)     # Misc: /api/config /api/cache/* /api/tab-active /
 # ---------------------------------------------------------------------------
 # Entry point

@@ -69,6 +69,18 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 Open **http://localhost:8000** in your browser.
 
+## Upstox Breakout Tab Setup
+
+Set your Upstox access token before starting the app to enable the
+"Upstox Breakout" tab:
+
+```powershell
+$env:UPSTOX_ACCESS_TOKEN = "your_upstox_access_token"
+```
+
+The tab scans Nifty 500 + Microcap 250 using Upstox daily candles and ranks
+fresh breakouts.
+
 ## Project Structure
 ```
 scanner/
