@@ -3,8 +3,7 @@ scanner.py -- Nifty 500 Stock Scanner
 
 Data source : yfinance NSE (.NS)             (primary – fast batch download)
               TradingView via tvDatafeed      (2nd fallback – excellent quality)
-              Alpha Vantage                  (3rd fallback – needs free API key)
-              yfinance BSE (.BO)              (4th fallback – existing)
+              yfinance BSE (.BO)              (3rd fallback)
               BSE / NSE Bhavcopy CSV          (latest-day volume/price patch)
 ADX         : ta library (pure-Python, replaces pandas_ta — compatible with Python 3.14+)
 RS ratio    : (1 + stock_ret20d) / (1 + index_ret20d)
@@ -16,39 +15,38 @@ Regime (aborts scan if failing):
   0b. Nifty500 RSI(14) > 50 for last 3 consecutive days
 
 Per-stock technical:
-   1. Avg traded value 20D  > Rs.7 Cr        (relaxed from 10 Cr)
-   2. Median traded value 20D > Rs.3 Cr               (optional: REQUIRE_MEDIAN_TV_20D)
-   3. Relative Volume Percentile Rank (60 sessions) > 60  (relaxed from 70)
+   1. Avg traded value 20D  > Rs.5 Cr
+   2. Median traded value 20D > Rs.1 Cr               (optional: REQUIRE_MEDIAN_TV_20D)
+   3. Relative Volume Percentile Rank (60 sessions) > 60
    4. ATR5 < 0.88 x ATR20                             (optional: REQUIRE_ATR_CONTRACTION)
    5. 20 EMA > 50 EMA  (stock uptrend regime)
    6. Weekly close > weekly 20 EMA
    7. Close > Highest High of last 20 bars             (optional: REQUIRE_HH20_BREAKOUT)
       AND Close >= High - 30% x (High - Low)           (optional: REQUIRE_PRICE_PROXIMITY)
-   8. Close <= 20 EMA + 2.0 x ATR14
+   8. Close <= 20 EMA + 1.5 x ATR14
    9. (Close - Low) / (High - Low) >= 0.65             (optional: REQUIRE_CLOSING_RANGE)
-  10. Weekly RSI(14) > 58                              (tightened from 55)
-  11. RSI(14) > 62  AND  RSI 3-period SMA rising       (tightened from 58; SMA rising optional)
+  10. Weekly RSI(14) > 57
+  11. RSI(14) > 60  AND  RSI 3-period SMA rising
   12. Volume Z-Score > 1.0  AND  Median TV(5D) > Median TV(20D)  (optional: REQUIRE_MEDIAN_TV_TREND)
       Volume Z-Score uses 3-day rolling avg (VOLUME_LOOKBACK_DAYS=3)
   13. RS Ratio SMA(10) > RS Ratio SMA(20)
-  14. Gap-up from prev close <= 4%
-  15. ADX(14) > 25  AND  +DI > -DI  [ta library]     (tightened from 22)
+  14. Gap-up from prev close <= 3%
+  15. ADX(14) > 25  AND  +DI > -DI  [ta library]
 
 Per-stock fundamental:
-  16. Market Cap > Rs.1200 Cr
-  17. D/E < 2.5  (Yahoo Finance: D/E x100, threshold = 250)
-      Note: uses multi-source chain  NSE live → Screener.in → Apify → Alpha Vantage → Yahoo.
+  16. Market Cap > Rs.500 Cr
+  17. D/E < 3.0  (Yahoo Finance: D/E x100, threshold = 300)
+      Note: uses multi-source chain  NSE live → Screener.in → Apify → Yahoo.
 
 Data quality / fallback strategy
 ---------------------------------
   OHLCV   1st: yfinance .NS  (NSE, auto_adjust=True)  — batch
   OHLCV   2nd: TradingView NSE / BSE                  — good quality, no auth
-  OHLCV   3rd: Alpha Vantage .NSE / .BSE              — rate-limited, with API key
-  OHLCV   4th: yfinance .BO  (BSE, auto_adjust=True)  — batch fallback
+  OHLCV   3rd: yfinance .BO  (BSE, auto_adjust=True)  — batch fallback
   Latest-day:  BSE / NSE Bhavcopy CSV                 — patches last candle
 Momentum / RS:
-  18. stock_ret20d - index_ret20d > 0.04   (RS ratio > 1.04 — tightened from 1.03)
-  19. Stock 20D return > sector average + 3%  (tightened from 2%)
+  18. stock_ret20d - index_ret20d > 0.05   (RS outperformance > 5% over 20D)
+  19. Stock 20D return > sector average + 4%
 
 Composite score | Stop loss: max(structural_low_3d, Entry - 1.0×ATR14), bounded [Entry−1.5×ATR, Entry−0.5×ATR]
 """
@@ -166,11 +164,10 @@ from config import (
     REQUIRE_WEEKLY_EMA, REQUIRE_RS_UPTREND, REQUIRE_ADX_THRESHOLD,
     REQUIRE_FUNDAMENTALS,
 )
-# Multi-source data clients (TradingView, nsepython, Alpha Vantage, Apify, Screener.in)
+# Multi-source data clients (TradingView, nsepython, Screener.in)
 from data_sources import (
     fundamentals  as _fund_client,   # enhanced FundamentalsClient singleton
     tv_client     as _tv_client,     # TradingView OHLCV
-    alpha_vantage as _av_client,     # Alpha Vantage standalone
 )
 import cache as _cache               # local OHLCV disk cache
 
@@ -480,6 +477,213 @@ class _BSEBhavcopy:
 
 
 # ---------------------------------------------------------------------------
+# Zerodha Kite Connect client  (primary OHLCV source)
+# Requires env vars: ZERODHA_API_KEY, ZERODHA_ACCESS_TOKEN
+# ---------------------------------------------------------------------------
+
+class _ZerodhaClient:
+    """
+    Fetches daily OHLCV from Zerodha Kite Connect historical API.
+
+    Instrument map : GET https://api.kite.trade/instruments  (public CSV, no auth)
+    Historical data: GET https://api.kite.trade/instruments/historical/{token}/day
+    Auth header    : Authorization: token {api_key}:{access_token}
+    """
+    _INSTRUMENTS_URL = "https://api.kite.trade/instruments"
+    _HIST_URL        = "https://api.kite.trade/instruments/historical/{token}/day"
+    _QUOTE_URL       = "https://api.kite.trade/quote"
+    _TIMEOUT         = 18
+    _QUOTE_BATCH_MAX = 500   # Zerodha allows up to 500 instruments per request
+
+    def __init__(self) -> None:
+        self._api_key      = (os.getenv("ZERODHA_API_KEY")      or "").strip()
+        self._access_token = (os.getenv("ZERODHA_ACCESS_TOKEN") or "").strip()
+        self._session      = requests.Session()
+        self._session.verify = False
+        self._session.headers.update({
+            "Accept":          "application/json",
+            "X-Kite-Version":  "3",
+            "User-Agent":      "scanner-zerodha/1.0",
+        })
+        if self._api_key and self._access_token:
+            self._session.headers.update({
+                "Authorization": f"token {self._api_key}:{self._access_token}"
+            })
+        self._map_lock   = threading.Lock()
+        self._sym_to_tok: dict = {}   # {SYMBOL: instrument_token (int)}
+        self._map_ts: float   = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        try:
+            from config import ENABLE_ZERODHA  # type: ignore[import]
+            if not ENABLE_ZERODHA:
+                return False
+        except ImportError:
+            pass
+        return bool(self._api_key and self._access_token)
+
+    def _load_instrument_map(self) -> None:
+        with self._map_lock:
+            if self._sym_to_tok and (time.time() - self._map_ts) < 6 * 3600:
+                return
+            try:
+                r = self._session.get(self._INSTRUMENTS_URL, timeout=self._TIMEOUT)
+                r.raise_for_status()
+                import io as _io
+                df = pd.read_csv(_io.StringIO(r.text))
+                nse_eq = df[
+                    (df["exchange"] == "NSE") & (df["instrument_type"] == "EQ")
+                ]
+                mp: dict = {}
+                for _, row in nse_eq.iterrows():
+                    sym = str(row.get("tradingsymbol") or "").strip().upper()
+                    tok = row.get("instrument_token")
+                    if sym and not pd.isna(tok):
+                        mp[sym] = int(tok)
+                self._sym_to_tok = mp
+                self._map_ts     = time.time()
+                logger.info("Zerodha instrument map loaded: %d NSE EQ symbols", len(mp))
+            except Exception as exc:
+                logger.warning("Zerodha instrument map load failed: %s", exc)
+
+    def _token_for(self, ticker: str) -> "int | None":
+        self._load_instrument_map()
+        sym = ticker.upper().replace(".NS", "").replace(".BO", "")
+        return self._sym_to_tok.get(sym)
+
+    def get_daily_ohlcv(self, ticker: str, days: int,
+                        end_date=None) -> "pd.DataFrame | None":
+        """Fetch up to `days` daily candles ending on `end_date`."""
+        if not self.enabled:
+            return None
+        token = self._token_for(ticker)
+        if not token:
+            return None
+        end_dt   = end_date if isinstance(end_date, dt_mod.date) else _ist_today()
+        start_dt = end_dt - dt_mod.timedelta(days=days + 60)
+        try:
+            r = self._session.get(
+                self._HIST_URL.format(token=token),
+                params={
+                    "from": start_dt.strftime("%Y-%m-%d"),
+                    "to":   end_dt.strftime("%Y-%m-%d"),
+                },
+                timeout=self._TIMEOUT,
+            )
+            r.raise_for_status()
+            body    = r.json() or {}
+            candles = (body.get("data") or {}).get("candles") or []
+            if not candles:
+                return None
+            # Zerodha candle: [timestamp, open, high, low, close, volume, oi]
+            df = pd.DataFrame(
+                candles,
+                columns=["Date", "Open", "High", "Low", "Close", "Volume", "OI"],
+            )
+            for col in ("Open", "High", "Low", "Close", "Volume"):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            df = df.dropna(subset=["Date", "Close"])
+            df = df[df["Close"] > 0]
+            if df.empty:
+                return None
+            df = df.sort_values("Date")
+            idx = df["Date"].dt.tz_localize(None).dt.normalize()
+            df = df.set_index(idx)
+            return df[["Open", "High", "Low", "Close", "Volume"]]
+        except Exception as exc:
+            logger.debug("ZerodhaClient.get_daily_ohlcv(%s): %s", ticker, exc)
+            return None
+
+    def get_live_quotes_batch(self, tickers: list) -> dict:
+        """
+        Fetch live OHLCV for multiple NSE tickers via Zerodha /quote API.
+
+        Returns {SYMBOL: {"open", "high", "low", "close", "volume"}}
+        where "close" = last_price (current traded price, not previous-day close).
+        Tickers may include the .NS / .BO suffix — it is stripped automatically.
+        Batches up to _QUOTE_BATCH_MAX instruments per API call.
+        """
+        if not self.enabled or not tickers:
+            return {}
+        symbols = list({t.upper().replace(".NS", "").replace(".BO", "") for t in tickers})
+        out: dict = {}
+        for i in range(0, len(symbols), self._QUOTE_BATCH_MAX):
+            batch  = symbols[i: i + self._QUOTE_BATCH_MAX]
+            params = [("i", f"NSE:{s}") for s in batch]
+            try:
+                r = self._session.get(self._QUOTE_URL, params=params, timeout=self._TIMEOUT)
+                r.raise_for_status()
+                data = (r.json() or {}).get("data") or {}
+                for key, val in data.items():
+                    sym  = key.split(":")[-1].upper()
+                    lp   = val.get("last_price")
+                    vol  = val.get("volume")
+                    ohlc = val.get("ohlc") or {}
+                    if lp:
+                        out[sym] = {
+                            "open":   float(ohlc.get("open")  or lp),
+                            "high":   float(ohlc.get("high")  or lp),
+                            "low":    float(ohlc.get("low")   or lp),
+                            "close":  float(lp),
+                            "volume": float(vol or 0),
+                        }
+            except Exception as exc:
+                logger.warning("Zerodha live quotes batch [%d:%d] failed: %s",
+                               i, i + len(batch), exc)
+        return out
+
+
+_zerodha = _ZerodhaClient()
+
+
+def _apply_zerodha_live_patch(all_data: dict, lbl: str) -> None:
+    """
+    Patch today's OHLCV candle in every DataFrame in *all_data* using live
+    quotes from the Zerodha /quote API.  Called only in live mode (target_date
+    is None).  No-op when Zerodha credentials are not configured.
+
+    For each ticker:
+      • If today's row already exists (historical API returned a partial candle),
+        the Close is replaced with last_price and High/Low are widened if needed.
+      • If today's row is absent (pre-market or first scan of the day),
+        a new row is appended so all filters see the latest price.
+    """
+    if not _zerodha.enabled:
+        return
+    quotes = _zerodha.get_live_quotes_batch(list(all_data.keys()))
+    if not quotes:
+        logger.debug("%s Zerodha live patch: no quotes returned", lbl)
+        return
+    today_ts = pd.Timestamp(_ist_today())
+    patched  = 0
+    for ticker in list(all_data.keys()):
+        sym = ticker.upper().replace(".NS", "").replace(".BO", "")
+        q   = quotes.get(sym)
+        if not q or not q["close"]:
+            continue
+        df = all_data[ticker]
+        if today_ts in df.index:
+            # Widen High/Low so intraday extremes are preserved, update Close
+            df.loc[today_ts, "Open"]   = q["open"]
+            df.loc[today_ts, "High"]   = max(float(df.at[today_ts, "High"]), q["high"])
+            df.loc[today_ts, "Low"]    = min(float(df.at[today_ts, "Low"]),  q["low"])
+            df.loc[today_ts, "Close"]  = q["close"]
+            df.loc[today_ts, "Volume"] = q["volume"]
+        else:
+            new_row = pd.DataFrame(
+                [[q["open"], q["high"], q["low"], q["close"], q["volume"]]],
+                index=[today_ts],
+                columns=["Open", "High", "Low", "Close", "Volume"],
+            )
+            all_data[ticker] = pd.concat([df, new_row]).sort_index()
+        patched += 1
+    logger.info("%s Zerodha live patch: %d/%d tickers updated with live candle",
+                lbl, patched, len(all_data))
+
+
+# ---------------------------------------------------------------------------
 # Core scanner
 # ---------------------------------------------------------------------------
 
@@ -640,13 +844,18 @@ class StockScanner:
         Fetch daily OHLCV with auto_adjust=True.
 
         Priority:
+          0. Zerodha Kite Connect           [primary — requires API credentials]
           1. NSE ticker (.NS) via yfinance
           2. TradingView (NSE → BSE)       — excellent quality, no auth
-          3. nsepython NSE historical       — authoritative direct NSE
-          4. Alpha Vantage (.NSE → .BSE)   — needs free API key
-          5. BSE ticker (.BO) via yfinance  — existing fallback
+          3. BSE ticker (.BO) via yfinance  — existing fallback
         """
-        # 1. Primary: NSE via yfinance
+        # 0. Primary: Zerodha Kite Connect
+        if _zerodha.enabled:
+            df_zd = _zerodha.get_daily_ohlcv(ticker, days, end_date)
+            if StockScanner._is_quality_ok(df_zd):
+                return df_zd
+
+        # 1. Fallback: NSE via yfinance
         df_ns = StockScanner._fetch_yf(ticker, days, end_date)
         if StockScanner._is_quality_ok(df_ns):
             return df_ns
@@ -657,13 +866,7 @@ class StockScanner:
             logger.debug("Using TradingView data for %s", ticker)
             return df_tv
 
-        # 3. Alpha Vantage (.NSE / .BSE)
-        df_av = _av_client.get_ohlcv(ticker, days, end_date)
-        if StockScanner._is_quality_ok(df_av):
-            logger.debug("Using Alpha Vantage data for %s", ticker)
-            return df_av
-
-        # 5. Fallback: BSE via yfinance (.BO)
+        # 3. Fallback: BSE via yfinance (.BO)
         bse_ticker = ticker.replace(".NS", ".BO")
         logger.debug("NSE data quality poor for %s -- trying BSE (%s)",
                      ticker, bse_ticker)
@@ -673,7 +876,7 @@ class StockScanner:
             return df_bo
 
         # Return whichever has the most rows (might still be usable)
-        candidates = [df for df in (df_ns, df_tv, df_nse, df_av, df_bo)
+        candidates = [df for df in (df_ns, df_tv, df_bo)
                       if df is not None]
         if not candidates:
             return None
@@ -700,6 +903,16 @@ class StockScanner:
         result: dict = {}
 
         def _fetch_one(t):
+            # 0. Try Zerodha first (when credentials are configured)
+            if _zerodha.enabled:
+                try:
+                    df = _zerodha.get_daily_ohlcv(t, days, end_date)
+                    if df is not None and not df.empty:
+                        return t, df
+                except Exception:
+                    pass
+
+            # 1. Fallback: yfinance direct chart API
             # Small random jitter so all workers don't fire at t=0
             time.sleep(_rnd.uniform(0.0, 0.15))
             for attempt in range(3):
@@ -1742,7 +1955,7 @@ class StockScanner:
             })
 
         # ── Step 1: Download OHLCV ─────────────────────────────────────────
-        # Priority: yfinance direct chart API → TradingView → nsepython → Alpha Vantage → BSE
+        # Priority: yfinance direct chart API → TradingView → BSE
         df = self._fetch_yf_direct(ticker, days=HIST_DAYS, end_date=target_date)
         if not self._is_quality_ok(df):
             # Try TradingView (excellent quality, no auth)
@@ -1751,20 +1964,14 @@ class StockScanner:
                 df = df_tv
                 logger.debug("analyze_single: using TradingView for %s", ticker)
             else:
-                # Try Alpha Vantage
-                df_av = _av_client.get_ohlcv(ticker, HIST_DAYS, end_date=target_date)
-                if self._is_quality_ok(df_av):
-                    df = df_av
-                    logger.debug("analyze_single: using Alpha Vantage for %s", ticker)
-                else:
-                    # Try BSE (.BO)
-                    bse_ticker = ticker.replace(".NS", ".BO")
-                    logger.debug("analyze_single: trying BSE fallback %s", bse_ticker)
-                    df_bo = self._fetch_yf_direct(bse_ticker, days=HIST_DAYS, end_date=target_date)
-                    if self._is_quality_ok(df_bo):
-                        df = df_bo
-                    elif df_bo is not None and (df is None or len(df_bo) > len(df or [])):
-                        df = df_bo
+                # Try BSE (.BO)
+                bse_ticker = ticker.replace(".NS", ".BO")
+                logger.debug("analyze_single: trying BSE fallback %s", bse_ticker)
+                df_bo = self._fetch_yf_direct(bse_ticker, days=HIST_DAYS, end_date=target_date)
+                if self._is_quality_ok(df_bo):
+                    df = df_bo
+                elif df_bo is not None and (df is None or len(df_bo) > len(df or [])):
+                    df = df_bo
 
         if df is None or len(df) < MIN_DATA_ROWS:
             # Last resort: try yf.download() batch path with single ticker
@@ -2185,7 +2392,7 @@ class StockScanner:
             "debt_equity":    round(de / 100, 2) if de and not pd.isna(de) else None,
             "rs_ratio":       round(rs_ratio, 4) if rs_ratio else None,
             "return_20d":     round(r20d, 2),
-            # ── Extra fundamentals from Screener.in + Alpha Vantage ──────────
+            # ── Extra fundamentals from Screener.in ────────────────────────
             "roe":               extra_fund.get("roe"),
             "current_ratio":     extra_fund.get("current_ratio"),
             "promoter_holding":  extra_fund.get("promoter_holding"),
@@ -2414,35 +2621,12 @@ class StockScanner:
                 logger.info("%s TradingView fallback: recovered %d/%d tickers",
                             lbl, tv_ok, len(still_missing))
 
-        # 2d. Alpha Vantage for tickers still missing (rate-limited — last resort)
-        still_missing = [t for t in bo_needed if t not in all_data]
-        if still_missing and _av_client.available:
-            _progress("Alpha Vantage fallback for %d tickers..." % len(still_missing))
-            logger.info("%s Alpha Vantage fallback: trying %d quality-failed tickers "
-                        "(rate-limited, may be slow)", lbl, len(still_missing))
-            av_ok = 0
-            _av_total = len(still_missing)
-            for _i, t in enumerate(still_missing, 1):
-                try:
-                    df = _av_client.get_ohlcv(t, HIST_DAYS, end_date=target_date)
-                    if self._is_quality_ok(df):
-                        all_data[t] = df
-                        if not target_date:
-                            _cache.save(t, df)
-                        av_ok += 1
-                        logger.debug("Alpha Vantage OK for %s", t)
-                except Exception as exc:
-                    logger.debug("Alpha Vantage failed for %s: %s", t, exc)
-                if _i % 10 == 0 or _i == _av_total:
-                    _progress("Alpha Vantage fallback: %d/%d tickers... (%d recovered)"
-                              % (_i, _av_total, av_ok))
-                    logger.info("%s Alpha Vantage fallback: %d/%d processed (%d recovered)",
-                                lbl, _i, _av_total, av_ok)
-            if av_ok:
-                logger.info("%s Alpha Vantage fallback: recovered %d/%d tickers",
-                            lbl, av_ok, len(still_missing))
-
         logger.info("%s OHLCV done: %d usable tickers", lbl, len(all_data))
+
+        # ── 2e. Zerodha live quote patch — overwrite today's candle with live data ─
+        if not target_date:
+            _progress("Fetching live quotes from Zerodha...")
+            _apply_zerodha_live_patch(all_data, lbl)
 
         # Step 2c -- Synthetic benchmark fallback
         # When the ^ index ticker (and all ETF fallbacks) returned no data,
@@ -2851,6 +3035,11 @@ class StockScanner:
                             _cache.save(t, df)
 
         logger.info("%s OHLCV done: %d usable tickers", lbl, len(all_data))
+
+        # Live candle patch — overwrite today's candle with Zerodha /quote data
+        if target_date is None:
+            _apply_zerodha_live_patch(all_data, lbl)
+
         if not all_data:
             return []
 

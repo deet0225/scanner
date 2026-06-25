@@ -344,7 +344,6 @@ SECTOR_FALLBACK_TO_MARKET = True
 # --------------------------------------------------------------------------- #
 import os
 
-ALPHA_VANTAGE_API_KEY   = os.getenv("ALPHA_VANTAGE_API_KEY", "")
 APIFY_API_KEY           = os.getenv("APIFY_API_KEY", "")
 APIFY_SCREENER_ACTOR_ID = os.getenv("APIFY_SCREENER_ACTOR_ID",
                                      "emastra~screener-stock-data-scraper")
@@ -354,7 +353,7 @@ TRADINGVIEW_PASSWORD = os.getenv("TRADINGVIEW_PASSWORD", "")
 # --------------------------------------------------------------------------- #
 # Source enable / disable flags
 # --------------------------------------------------------------------------- #
+ENABLE_ZERODHA         = True
 ENABLE_TRADINGVIEW     = True
-ENABLE_ALPHA_VANTAGE   = True
 ENABLE_APIFY_SCREENER  = True
 ENABLE_NSE_PYTHON_HIST = True

@@ -7,9 +7,8 @@ Historical OHLCV:
   1. yfinance NSE (.NS)         [primary – fast batch in scanner.py]
   2. TradingView NSE / BSE      [excellent quality, no auth required]
   3. nsepython historical       [authoritative NSE direct API]
-  4. Alpha Vantage              [good quality, rate-limited, needs free key]
-  5. yfinance BSE (.BO)         [existing fallback in scanner.py]
-  6. NSE / BSE Bhavcopy CSV     [latest-day volume/price patch]
+  4. yfinance BSE (.BO)         [existing fallback in scanner.py]
+  5. NSE / BSE Bhavcopy CSV     [latest-day volume/price patch]
 
 Live / latest-day candle:
   1. NSE live quote API  (real-time price, VWAP, issued shares)
@@ -19,8 +18,7 @@ Live / latest-day candle:
 Market Cap:
   1. NSE live API  (issuedSize × lastPrice  — most accurate)
   2. Screener.in   (market_cap_cr field)
-  3. Alpha Vantage company overview
-  4. yfinance quoteSummary
+  3. yfinance quoteSummary
 
 D/E Ratio:
   1. Screener.in  HTML scrape  (quarterly filing data — sole source)
@@ -674,238 +672,8 @@ class TradingViewClient:
 
         return None
 
-
 # ---------------------------------------------------------------------------
-# 4. Alpha Vantage Client  (OHLCV + comprehensive fundamentals)
-# ---------------------------------------------------------------------------
-
-class AlphaVantageClient:
-    """
-    Fetches historical OHLCV and company fundamentals from Alpha Vantage API.
-
-    - Free tier: 25 API calls / day.
-    - Premium tiers: 500+/min.
-    - Supports Indian stocks with .NSE and .BSE suffixes.
-
-    Set ALPHA_VANTAGE_API_KEY in config.py or as the env-var
-    ALPHA_VANTAGE_API_KEY.  Get a free key at https://alphavantage.co
-    """
-
-    BASE_URL   = "https://www.alphavantage.co/query"
-    _cache:    dict = {}
-    _cache_ts: dict = {}
-    _TTL_OHLCV  = 3600 * 6    # 6 h cache for OHLCV
-    _TTL_FUND   = 3600 * 24   # 24 h cache for fundamentals
-    _last_call: float = 0.0
-    _min_gap:   float = 13.0   # ~4.5 calls/min  (free-tier safe)
-    _lock = threading.Lock()
-
-    def __init__(self, api_key: str = ""):
-        self._key       = api_key.strip()
-        self._available = bool(self._key)
-        if self._available:
-            logger.info("Alpha Vantage data source: enabled")
-        else:
-            logger.info("Alpha Vantage: no API key -- set ALPHA_VANTAGE_API_KEY to enable")
-
-    @property
-    def available(self) -> bool:
-        return self._available
-
-    def _throttle(self) -> None:
-        with self._lock:
-            gap = time.time() - self._last_call
-            if gap < self._min_gap:
-                time.sleep(self._min_gap - gap)
-            self._last_call = time.time()
-
-    # ── OHLCV ─────────────────────────────────────────────────────────────────
-
-    def get_ohlcv(self, nse_symbol: str, days: int = 600,
-                  end_date=None) -> pd.DataFrame | None:
-        """Fetch split/dividend-adjusted daily OHLCV. Tries .NSE then .BSE."""
-        if not self._available:
-            return None
-
-        sym = nse_symbol.upper().replace(".NS", "").replace(".BO", "")
-
-        for av_sym in (f"{sym}.NSE", f"{sym}.BSE"):
-            cache_key = f"ohlcv_{av_sym}"
-            now = time.time()
-
-            if cache_key in self._cache and \
-                    (now - self._cache_ts.get(cache_key, 0)) < self._TTL_OHLCV:
-                df = self._cache[cache_key]
-            else:
-                df = self._fetch_daily(av_sym)
-                if df is not None:
-                    self._cache[cache_key]    = df
-                    self._cache_ts[cache_key] = now
-
-            if df is not None and len(df) >= 20:
-                result = df.copy()
-                if end_date is not None:
-                    ed = (end_date if isinstance(end_date, dt_mod.date)
-                          else dt_mod.date.fromisoformat(str(end_date)))
-                    result = result[result.index.normalize() <= pd.Timestamp(ed)]
-                if not result.empty:
-                    logger.debug("AlphaVantage OHLCV(%s): %d rows", av_sym, len(result))
-                    return result
-
-        return None
-
-    def _fetch_daily(self, av_symbol: str) -> pd.DataFrame | None:
-        self._throttle()
-        try:
-            r = _SESSION.get(self.BASE_URL, params={
-                "function":   "TIME_SERIES_DAILY_ADJUSTED",
-                "symbol":     av_symbol,
-                "outputsize": "full",
-                "apikey":     self._key,
-            }, timeout=30)
-
-            if r.status_code != 200:
-                return None
-
-            data = r.json()
-
-            if "Note" in data or "Information" in data:
-                logger.warning("Alpha Vantage rate limit for %s", av_symbol)
-                return None
-
-            ts = data.get("Time Series (Daily)", {})
-            if not ts:
-                return None
-
-            records = []
-            for date_str, v in ts.items():
-                try:
-                    raw_close = float(v.get("4. close", 0))
-                    adj_close = float(v.get("5. adjusted close", raw_close))
-                    ratio = (adj_close / raw_close) if raw_close > 0 else 1.0
-                    records.append({
-                        "date":   pd.to_datetime(date_str),
-                        "Open":   float(v.get("1. open", 0)) * ratio,
-                        "High":   float(v.get("2. high", 0)) * ratio,
-                        "Low":    float(v.get("3. low",  0)) * ratio,
-                        "Close":  adj_close,
-                        "Volume": float(v.get("6. volume", 0)),
-                    })
-                except Exception:
-                    pass
-
-            if not records:
-                return None
-
-            df = pd.DataFrame(records).set_index("date").sort_index()
-            df.index = pd.to_datetime(df.index).normalize()
-            df = df.dropna(subset=["Close"])
-            df = df[df["Close"] > 0]
-            return df if not df.empty else None
-
-        except Exception as exc:
-            logger.debug("AlphaVantage._fetch_daily(%s): %s", av_symbol, exc)
-            return None
-
-    # ── Fundamentals ──────────────────────────────────────────────────────────
-
-    def get_fundamentals(self, nse_symbol: str) -> dict | None:
-        """
-        Returns dict with:
-          sector, market_cap_inr, debt_equity_ratio (raw, not ×100),
-          pe_ratio, eps, dividend_yield, 52w_high, 52w_low,
-          profit_margin_pct, return_on_equity_ttm, book_value
-        """
-        if not self._available:
-            return None
-
-        sym       = nse_symbol.upper().replace(".NS", "").replace(".BO", "")
-        cache_key = f"fund_{sym}"
-        now       = time.time()
-
-        if cache_key in self._cache and \
-                (now - self._cache_ts.get(cache_key, 0)) < self._TTL_FUND:
-            return self._cache[cache_key]
-
-        for av_sym in (f"{sym}.NSE", f"{sym}.BSE"):
-            result = self._fetch_overview(av_sym)
-            if result:
-                self._cache[cache_key]    = result
-                self._cache_ts[cache_key] = now
-                return result
-
-        return None
-
-    def _fetch_overview(self, av_symbol: str) -> dict | None:
-        self._throttle()
-        try:
-            r = _SESSION.get(self.BASE_URL, params={
-                "function": "OVERVIEW",
-                "symbol":   av_symbol,
-                "apikey":   self._key,
-            }, timeout=30)
-
-            if r.status_code != 200:
-                return None
-
-            data = r.json()
-
-            if "Note" in data or "Information" in data:
-                logger.warning("Alpha Vantage rate limit (overview %s)", av_symbol)
-                return None
-
-            if not data or "Symbol" not in data:
-                return None
-
-            def _sf(key) -> float | None:
-                try:
-                    v = float(data.get(key, ""))
-                    return None if (v == 0 or np.isnan(v)) else v
-                except Exception:
-                    return None
-
-            result: dict = {}
-
-            sector = data.get("Sector", "")
-            if sector and sector not in ("None", "-", "", "N/A"):
-                result["sector"] = sector
-
-            # Market cap — AV reports in INR for BSE/NSE symbols
-            mc = _sf("MarketCapitalization")
-            if mc:
-                result["market_cap_inr"] = mc
-
-            # D/E ratio (raw ratio — NOT ×100)
-            de = _sf("DebtToEquityRatio")
-            if de is not None:
-                result["debt_equity_ratio"] = de
-
-            for k, field in (("pe_ratio", "PERatio"), ("eps", "EPS"),
-                              ("dividend_yield", "DividendYield"),
-                              ("book_value", "BookValue"),
-                              ("52w_high", "52WeekHigh"),
-                              ("52w_low",  "52WeekLow")):
-                v = _sf(field)
-                if v is not None:
-                    result[k] = v
-
-            pm = _sf("ProfitMargin")
-            if pm is not None:
-                result["profit_margin_pct"] = round(pm * 100, 2)
-
-            roe = _sf("ReturnOnEquityTTM")
-            if roe is not None:
-                result["return_on_equity_ttm"] = round(roe * 100, 2)
-
-            return result if result else None
-
-        except Exception as exc:
-            logger.debug("AlphaVantage._fetch_overview(%s): %s", av_symbol, exc)
-            return None
-
-
-# ---------------------------------------------------------------------------
-# 5. Apify Screener Client  (screener.in via Apify — structured fundamental data)
+# 4. Apify Screener Client  (screener.in via Apify — structured fundamental data)
 # ---------------------------------------------------------------------------
 
 class ApifyScreenerClient:
@@ -1438,18 +1206,6 @@ def _build_nse_hist_client() -> NSEPythonHistClient:
     return NSEPythonHistClient()
 
 
-def _build_alpha_vantage_client() -> AlphaVantageClient:
-    try:
-        from config import (                        # type: ignore[import]
-            ALPHA_VANTAGE_API_KEY, ENABLE_ALPHA_VANTAGE,
-        )
-        return AlphaVantageClient(
-            api_key=ALPHA_VANTAGE_API_KEY if ENABLE_ALPHA_VANTAGE else ""
-        )
-    except Exception:
-        return AlphaVantageClient()
-
-
 # ---------------------------------------------------------------------------
 # Module-level singletons — import these in scanner.py / other modules
 # ---------------------------------------------------------------------------
@@ -1458,4 +1214,3 @@ _screener     = ScreenerClient()
 fundamentals  = _build_fundamentals_client()      # multi-source fundamentals
 tv_client     = _build_tradingview_client()        # TradingView OHLCV
 nse_hist      = _build_nse_hist_client()           # nsepython NSE historical
-alpha_vantage = _build_alpha_vantage_client()      # Alpha Vantage standalone

@@ -429,18 +429,18 @@
 
 <!-- ── Tab bar ── -->
 <div class="tab-bar">
-  <button class="tab-btn active" id="tab-btn-swing"        onclick="switchTab('swing')">&#9889; Swing Trades</button>
+  <button class="tab-btn active" id="tab-btn-morningmom"   onclick="switchTab('morningmom')">&#127774; Morning Star</button>
+  <button class="tab-btn"        id="tab-btn-upbreak"      onclick="switchTab('upbreak')">&#128640; Breakout</button>
+  <button class="tab-btn"        id="tab-btn-swing"        onclick="switchTab('swing')">&#9889; Swing Trades</button>
   <button class="tab-btn"        id="tab-btn-momentum"     onclick="switchTab('momentum')">&#128200; Stock Momentum</button>
-  <button class="tab-btn"        id="tab-btn-morningmom"   onclick="switchTab('morningmom')">&#127774; Morning Star</button>
+  <button class="tab-btn"        id="tab-btn-sectors"      onclick="switchTab('sectors')">&#128201; Sector Momentum</button>
   <button class="tab-btn"        id="tab-btn-fund"         onclick="switchTab('fund')">&#128142; Fundamentals</button>
   <button class="tab-btn"        id="tab-btn-sme"          onclick="switchTab('sme')">&#127981; SME Fundamentals</button>
-  <button class="tab-btn"        id="tab-btn-sectors"      onclick="switchTab('sectors')">&#128201; Sector Momentum</button>
-  <button class="tab-btn"        id="tab-btn-upbreak"      onclick="switchTab('upbreak')">&#128640; Upstox Breakout</button>
   <button class="tab-btn"        id="tab-btn-search"       onclick="switchTab('search')">&#128269; Stock Search</button>
 </div>
 
 <!-- ════════════════════════════════ TAB 1: Swing Trades (Nifty 500 + Microcap 250) ════════════════════════════════ -->
-<div class="tab-pane active" id="tab-swing">
+<div class="tab-pane" id="tab-swing">
   <div class="statbar">
     <div class="stat-pill">
       <i class="bi bi-trophy-fill text-warning"></i>
@@ -610,7 +610,7 @@
 </div>
 
 <!-- ════════════════════════════════ TAB: Morning Star ════════════════════════════════ -->
-<div class="tab-pane" id="tab-morningmom">
+<div class="tab-pane active" id="tab-morningmom">
   <div class="statbar">
     <div class="stat-pill">
       <i class="bi bi-sunrise-fill text-warning"></i>
@@ -886,7 +886,7 @@
   </div>
 </div>
 
-<!-- ════════════════════════════════ TAB: Upstox Breakout ════════════════════════════════ -->
+<!-- ════════════════════════════════ TAB: Breakout ════════════════════════════════ -->
 <div class="tab-pane" id="tab-upbreak">
   <div class="statbar">
     <div class="stat-pill">
@@ -905,13 +905,19 @@
       <i class="bi bi-clock-history text-muted"></i>
       <div><div class="stat-label">Scan Status</div><div class="stat-value" id="upb-scan-status" style="font-size:0.72rem;">--</div></div>
     </div>
-    <button class="rescan-btn" id="upb-refresh-btn" onclick="upBreakLoad(true)" title="Refresh Upstox breakout scan">
+    <button class="rescan-btn" id="upb-refresh-btn" onclick="upBreakLoad(true)" title="Refresh breakout scan">
       <i class="bi bi-arrow-clockwise icon"></i>
       <i class="bi bi-arrow-clockwise spin"></i>
       Refresh
     </button>
+    <div class="date-picker-wrap" title="Pick a date for historical scan — leave blank for live data">
+      <label for="upb-date">&#128197; Date</label>
+      <input type="date" id="upb-date" class="date-inp" title="Historical date (leave blank for live)" />
+    </div>
+    <span class="hist-badge" id="upb-hist-badge"></span>
+    <button class="live-btn" id="upb-live-btn" onclick="upBreakClearDate()">&#9889; Live</button>
     <div style="margin-left:auto; font-size:0.72rem; color:var(--text-muted); padding: 5px 12px;">
-      Source: Upstox daily candles &middot; Breakout: Close&gt;20D High &middot; Vol Ratio&ge;1.4 &middot; RSI&ge;58 &middot; EMA20&gt;EMA50
+      Source: Zerodha (yfinance fallback) &middot; 50D High Breakout &middot; Vol&ge;1.5&times; &middot; RSI 55&ndash;80 &middot; ADX&ge;20 &middot; Bullish Close &middot; ATR Stop
     </div>
   </div>
 
@@ -919,13 +925,13 @@
     <div class="card-head">
       <div style="font-weight:600;font-size:0.92rem;">
         <i class="bi bi-rocket-takeoff-fill text-warning me-2"></i>
-        Upstox Breakout Finder &mdash; Nifty 500 + Microcap 250
+        Breakout Finder &mdash; Nifty 500 + Microcap 250
       </div>
       <span class="badge bg-warning text-dark" id="upb-result-count" style="font-size:0.75rem;">0 stocks</span>
     </div>
     <div id="upb-loading-msg" class="scanning-msg" style="display:none;">
       <div class="spinner-border text-warning mb-3" role="status" style="width:2.5rem;height:2.5rem;"></div>
-      <div class="scan-status-txt" style="font-size:0.95rem;" id="upb-loading-text">Scanning breakout candidates via Upstox&hellip;</div>
+      <div class="scan-status-txt" style="font-size:0.95rem;" id="upb-loading-text">Scanning breakout candidates via Zerodha&hellip;</div>
       <div style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">This scans all 750 symbols and can take a few minutes based on API latency.</div>
     </div>
     <div class="table-responsive">
@@ -934,17 +940,18 @@
         <th style="width:80px;">From</th>
         <th>Ticker</th>
         <th>Price (&#8377;)</th>
-        <th>Breakout %</th>
+        <th>Brk % / 52W</th>
         <th>Vol Ratio</th>
-        <th>RSI 14</th>
-        <th>EMA20 / EMA50</th>
-        <th>Stop Loss</th>
+        <th>RSI / ADX</th>
+        <th>EMA 20/50</th>
+        <th>Stop / Risk</th>
+        <th>Target / R:R</th>
         <th>Score</th>
       </tr></thead>
-      <tbody id="upb-results-body"><tr><td colspan="10">
+      <tbody id="upb-results-body"><tr><td colspan="11">
         <div class="empty-state">
           <i class="bi bi-rocket fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
-          Click <strong>&#128640; Upstox Breakout</strong> tab or <strong>Refresh</strong> to scan.
+          Click <strong>&#128640; Breakout</strong> tab or <strong>Refresh</strong> to scan.
         </div>
       </td></tr></tbody></table>
     </div>
@@ -1236,6 +1243,13 @@ document.addEventListener('DOMContentLoaded', function() {
     else   momClearDate();
   });
 
+  // Breakout date picker
+  _initDatePicker('upb-date', function() {
+    var d = document.getElementById('upb-date').value;
+    if (d) upBreakLoad(false);
+    else   upBreakClearDate();
+  });
+
   // Morning Star date picker
   _initDatePicker('mmom-date', function() {
     var d = document.getElementById('mmom-date').value;
@@ -1308,7 +1322,7 @@ function fmtPct(v) {
 }
 
 // ── Tab switcher ───────────────────────────────────────────────────────────
-var activeTab = 'swing';
+var activeTab = 'morningmom';
 
 function switchTab(name) {
   if (name !== 'sectors' && _secPollTimer) {
@@ -2084,35 +2098,62 @@ function renderMomentum(stocks, meta) {
   }).join('');
 }
 
-// ══════════════════════════ UPSTOX BREAKOUT ═════════════════════════════
+// ══════════════════════════ BREAKOUT ═════════════════════════════
 var _upBreakLoaded = false;
 var _upBreakPollTimer = null;
+
+function upBreakClearDate() {
+  document.getElementById('upb-date').value = '';
+  var badge = document.getElementById('upb-hist-badge');
+  var lbtn  = document.getElementById('upb-live-btn');
+  if (badge) { badge.textContent = ''; badge.classList.remove('show'); }
+  if (lbtn)  lbtn.classList.remove('show');
+  upBreakLoad(false);
+}
 
 function upBreakLoad(force) {
   if (_upBreakPollTimer) { clearTimeout(_upBreakPollTimer); _upBreakPollTimer = null; }
 
-  var btn = document.getElementById('upb-refresh-btn');
+  var btn    = document.getElementById('upb-refresh-btn');
   var loadEl = document.getElementById('upb-loading-msg');
-  var txtEl = document.getElementById('upb-loading-text');
-  if (btn) btn.classList.add('scanning');
+  var txtEl  = document.getElementById('upb-loading-text');
+  if (btn)    btn.classList.add('scanning');
   if (loadEl) loadEl.style.display = 'block';
-  if (txtEl) txtEl.textContent = 'Scanning breakout candidates via Upstox...';
 
-  var url = '/api/upstox-breakout' + (force ? '?refresh=1' : '');
+  var dateVal = document.getElementById('upb-date').value;
+  var badge   = document.getElementById('upb-hist-badge');
+  var lbtn    = document.getElementById('upb-live-btn');
+
+  var url;
+  if (dateVal) {
+    url = '/api/breakout?date=' + encodeURIComponent(dateVal);
+    if (badge) { badge.textContent = '\uD83D\uDCC5 ' + dateVal; badge.classList.add('show'); }
+    if (lbtn)  lbtn.classList.add('show');
+    if (txtEl) txtEl.textContent = 'Loading historical breakout scan for ' + dateVal + '\u2026';
+  } else {
+    url = '/api/breakout' + (force ? '?refresh=1' : '');
+    if (badge) { badge.textContent = ''; badge.classList.remove('show'); }
+    if (lbtn)  lbtn.classList.remove('show');
+    if (txtEl) txtEl.textContent = 'Scanning breakout candidates via Zerodha\u2026';
+  }
   fetch(url)
     .then(function(r) { return r.json(); })
     .then(function(j) {
       var scanning = j.status === 'scanning' || j.status === 'initializing';
+      var isHist   = !!document.getElementById('upb-date').value;
       document.getElementById('upb-scan-status').innerHTML =
-        scanning ? '&#8987; Scan in progress...' :
-        (j.status === 'complete' ? '&#10003; Up-to-date' : (j.error ? '&#10007; Error' : (j.status || '--')));
+        scanning ? '&#8987; Scan in progress\u2026' :
+        (j.status === 'complete'
+          ? (isHist ? '&#10003; As of ' + (j.as_of_date || document.getElementById('upb-date').value)
+                    : '&#10003; Up-to-date')
+          : (j.error ? '&#10007; Error' : (j.status || '--')));
 
       document.getElementById('upb-count').textContent = j.total || 0;
       document.getElementById('upb-n5-count').textContent = (j.n500_count || 0) + ' stocks';
       document.getElementById('upb-mc-count').textContent = (j.mc_count || 0) + ' stocks';
 
-      if (scanning) {
-        if (txtEl) txtEl.textContent = j.scan_stage || 'Scanning Nifty 500 + Microcap 250 via Upstox...';
+      if (scanning && !isHist) {
+        if (txtEl) txtEl.textContent = j.scan_stage || 'Scanning Nifty 500 + Microcap 250 via Zerodha\u2026';
         _upBreakPollTimer = setTimeout(function() {
           if (activeTab === 'upbreak') upBreakLoad(false);
         }, 5000);
@@ -2125,7 +2166,7 @@ function upBreakLoad(force) {
 
       if (j.error) {
         document.getElementById('upb-results-body').innerHTML =
-          '<tr><td colspan="10"><div class="empty-state">' +
+          '<tr><td colspan="11"><div class="empty-state">' +
           '<i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
           j.error + '</div></td></tr>';
         document.getElementById('upb-result-count').textContent = '0 stocks';
@@ -2149,8 +2190,8 @@ function renderUpBreakRows(stocks) {
   var tbody = document.getElementById('upb-results-body');
   document.getElementById('upb-result-count').textContent = (stocks || []).length + ' stocks';
   if (!stocks || !stocks.length) {
-    tbody.innerHTML = '<tr><td colspan="10"><div class="empty-state">' +
-      '<i class="bi bi-search fs-2 d-block mb-2"></i>No breakouts found in the latest Upstox scan.</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11"><div class="empty-state">' +
+      '<i class="bi bi-search fs-2 d-block mb-2"></i>No breakouts found in the latest scan.</div></td></tr>';
     return;
   }
 
@@ -2159,13 +2200,35 @@ function renderUpBreakRows(stocks) {
     var rkCls = rank <= 3 ? 'rank-' + rank : '';
     var from = s.from_index || '--';
     var fromCls = from === 'Nifty 500' ? 'from-n500' : 'from-mc250';
+
+    // Breakout % + 52W badge
     var brk = s.breakout_pct != null ? Number(s.breakout_pct) : null;
-    var brkCls = brk != null ? (brk >= 2 ? 'vs-sector-pos' : brk >= 0 ? '' : 'vs-sector-neg') : '';
+    var brkCls = brk != null ? (brk >= 3 ? 'vs-sector-pos' : brk >= 0 ? '' : 'vs-sector-neg') : '';
+    var brkLabel = brk != null ? ((brk >= 0 ? '+' : '') + brk.toFixed(2) + '%') : '--';
+    var w52badge = s.is_52w_break
+      ? ' <span style="font-size:0.58rem;background:#f59e0b;color:#000;border-radius:3px;padding:1px 4px;vertical-align:middle;font-weight:700;">52W</span>'
+      : '';
+
+    // Volume
     var vol = s.vol_ratio != null ? Number(s.vol_ratio) : null;
-    var volCls = vol != null ? (vol >= 2 ? 'vs-sector-pos' : vol >= 1.4 ? 'de-ok' : '') : '';
+    var volCls = vol != null ? (vol >= 3 ? 'vs-sector-pos' : vol >= 1.5 ? 'de-ok' : '') : '';
+
+    // RSI + ADX
     var rsi = s.rsi != null ? Number(s.rsi) : null;
     var rsiCls = rsi != null ? rsiClass(rsi) : '';
-    var risk = s.risk_pct != null ? Number(s.risk_pct).toFixed(2) + '%' : '--';
+    var adx = s.adx != null ? Number(s.adx) : null;
+    var adxCls = adx != null ? (adx >= 35 ? 'vs-sector-pos' : adx >= 20 ? 'de-ok' : '') : '';
+
+    // Stop / Risk
+    var risk = s.risk_pct != null ? Number(s.risk_pct).toFixed(1) + '%' : '--';
+
+    // Target / R:R
+    var target = s.target != null
+      ? '&#8377;' + Number(s.target).toLocaleString('en-IN', {maximumFractionDigits:2})
+      : '--';
+    var rr = s.rr_ratio != null ? Number(s.rr_ratio).toFixed(1) + ':1' : '--';
+    var rrCls = s.rr_ratio != null ? (s.rr_ratio >= 2.5 ? 'vs-sector-pos' : s.rr_ratio >= 1.5 ? 'de-ok' : '') : '';
+
     var priceCell = s.price != null
       ? '<span class="price-val">&#8377;' + Number(s.price).toLocaleString('en-IN', {maximumFractionDigits:2}) + '</span>'
       : '--';
@@ -2175,9 +2238,12 @@ function renderUpBreakRows(stocks) {
       '<td class="' + fromCls + '" style="white-space:nowrap;font-size:0.70rem;font-weight:700;">' + from + '</td>' +
       '<td><div class="ticker-sym">' + (s.display_ticker || '--') + '</div></td>' +
       '<td>' + priceCell + '</td>' +
-      '<td><span class="' + brkCls + '">' + (brk != null ? ((brk >= 0 ? '+' : '') + brk.toFixed(2) + '%') : '--') + '</span></td>' +
+      '<td><span class="' + brkCls + '">' + brkLabel + '</span>' + w52badge + '</td>' +
       '<td><span class="vol-badge ' + volCls + '">' + (vol != null ? vol.toFixed(2) + 'x' : '--') + '</span></td>' +
-      '<td><span class="' + rsiCls + '">' + (rsi != null ? rsi.toFixed(1) : '--') + '</span></td>' +
+      '<td>' +
+        '<span class="' + rsiCls + '">' + (rsi != null ? rsi.toFixed(1) : '--') + '</span>' +
+        '<div class="sector-sub"><span class="' + adxCls + '">ADX ' + (adx != null ? adx.toFixed(1) : '--') + '</span></div>' +
+      '</td>' +
       '<td>' +
         '<span class="dma-val">20: ' + (s.ema20 != null ? Number(s.ema20).toFixed(2) : '--') + '</span>' +
         '<div class="sector-sub">50: ' + (s.ema50 != null ? Number(s.ema50).toFixed(2) : '--') + '</div>' +
@@ -2186,7 +2252,11 @@ function renderUpBreakRows(stocks) {
         '<span class="sl-val">' + (s.stop_loss != null ? '&#8377;' + Number(s.stop_loss).toFixed(2) : '--') + '</span>' +
         '<div class="sl-sub">Risk: ' + risk + '</div>' +
       '</td>' +
-      '<td><span class="score-num">' + Number(s.score || 0).toFixed(2) + '</span></td>' +
+      '<td>' +
+        '<span class="' + rrCls + '">' + rr + '</span>' +
+        '<div class="sector-sub">' + target + '</div>' +
+      '</td>' +
+      '<td><span class="score-num">' + Number(s.score || 0).toFixed(1) + '</span></td>' +
       '</tr>';
   }).join('');
 }

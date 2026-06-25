@@ -1,109 +1,152 @@
-# Nifty 500 Stock Scanner
+# NSE Stock Scanner
 
-A near real-time multi-factor stock screener for NSE-listed Nifty 500 stocks, with a live web dashboard.
+A multi-tab, near real-time stock screener for NSE-listed stocks (Nifty 500 + Microcap 250),
+with a live web dashboard. Each tab runs an independent scan strategy.
+
+## Tabs
+
+| Tab | Strategy | Universe |
+|-----|----------|----------|
+| ☀ Morning Star | 3-candle bullish-reversal pattern | Nifty 500 + Microcap 250 |
+| 🚀 Breakout | 50D high breakout — swing-trade quality gates | Nifty 500 + Microcap 250 |
+| ⚡ Swing Trades | Multi-factor momentum + trend entry | Nifty 500 + Microcap 250 |
+| 📈 Stock Momentum | Early momentum detection (RSI/ADX/MACD) | Nifty 500 + Microcap 250 |
+| 📉 Sector Momentum | 29 NSE/BSE sector indices ranked by swing score | Sector indices |
+| 💎 Fundamentals | Quality + value screening | Nifty 500 + Microcap 250 |
+| 🏭 SME Fundamentals | High-growth quality screening | NSE Emerge + BSE SME |
+| 🔍 Stock Search | Single stock deep-dive | Any NSE ticker |
+
+See `docs/` for full filter criteria for each tab.
 
 ## Tech Stack
-- **Backend**: Python 3.9+, FastAPI, APScheduler, yfinance, pandas, numpy
-- **Frontend**: Bootstrap 5 dark dashboard, Server-Sent Events (SSE)
-- **Port**: **8000**
 
-## Filters Applied (all must pass)
-| Filter | Threshold |
-|--------|-----------|
-| P/E Ratio | < 20 (TTM, Yahoo Finance) |
-| Volume Spike | Current day > 2× 20-day avg |
-| RSI (14-period) | > 55 |
-| Price vs 50 DMA | Price must be above |
-| MACD | MACD line > Signal line |
-| Sector Strength | Sector 20-day avg return > market median |
-
-## Composite Ranking Score
-```
-score = (20−PE)/20 × 0.30
-      + min(vol_ratio/10,1) × 0.30
-      + (RSI−55)/45 × 0.20
-      + min(pct_above_50DMA/20,1) × 0.20
-```
+- **Backend**: Python 3.11+, FastAPI, APScheduler, uvicorn
+- **Frontend**: Bootstrap 5 dark dashboard, Server-Sent Events (SSE) for live polling
+- **Port**: 8000
+- **Data sources**:
+  - yfinance (NSE `.NS` primary, BSE `.BO` fallback)
+  - TradingView via tvDatafeed (OHLCV fallback)
+  - Zerodha Kite Connect (Breakout tab: historical candles + live quotes)
+  - Screener.in (Fundamentals + SME)
+  - NSE live quote API (market cap, live price)
 
 ## Setup & Run
 
-### Option 1 — IntelliJ IDEA (recommended)
-
-**Set the Python interpreter**
-1. `File` → `Project Structure` → `SDKs` → `+` → `Add Python SDK`
-2. Pick **Existing environment** → browse to `.venv\Scripts\python.exe`
-3. Apply
-
-**Create a Run Configuration**
-1. `Run` → `Edit Configurations` → `+` → **Python**
-2. Set:
-   - **Name**: `Scanner`
-   - Select **Module name** (not Script): `uvicorn`
-   - **Parameters**: `main:app --host 0.0.0.0 --port 8000`
-   - **Working directory**: `C:\Rama\Work\Work\scanner`
-   - **Interpreter**: the `.venv` interpreter above
-3. Click **OK** → press ▶ (`Shift+F10`)
-
-**Or use the IntelliJ built-in Terminal** (`Alt+F12`):
-```powershell
-cd C:\Rama\Work\Work\scanner
-.venv\Scripts\uvicorn.exe main:app --host 0.0.0.0 --port 8000
-```
-
-### Option 2 — PowerShell (any terminal)
+### 1. Install dependencies
 
 ```powershell
-# 1. Create virtual environment (first time only)
+cd C:\Rama\Work\scanner-z
+
+# Create virtual environment (first time only)
 python -m venv .venv
 
-# 2. Install dependencies (first time only)
-.venv\Scripts\pip.exe install -r requirements.txt
-
-# 3a. Activate venv, then start
+# Activate
 .venv\Scripts\Activate.ps1
-uvicorn main:app --host 0.0.0.0 --port 8000
 
-# 3b. OR start without activating
-.venv\Scripts\uvicorn.exe main:app --host 0.0.0.0 --port 8000
+# Install packages
+pip install -r requirements.txt
+
+# tvDatafeed is not on PyPI — install from GitHub (optional; improves data quality)
+pip install git+https://github.com/StreamAlpha/tvdatafeed.git
+```
+
+### 2. Run (without Zerodha)
+
+```powershell
+cd C:\Rama\Work\scanner-z
+python main.py
+```
+
+All tabs work except the Breakout tab's live quote patch (falls back to yfinance-only).
+
+### 3. Run (with Zerodha — enables Breakout tab live data)
+
+```powershell
+cd C:\Rama\Work\scanner-z
+$env:ZERODHA_API_KEY      = "your_api_key"
+$env:ZERODHA_ACCESS_TOKEN = "your_access_token"
+python main.py
 ```
 
 Open **http://localhost:8000** in your browser.
 
-## Upstox Breakout Tab Setup
+> **Zerodha access token** expires daily. Generate a fresh one from
+> [Kite Connect](https://kite.trade/) each trading day before starting the app.
 
-Set your Upstox access token before starting the app to enable the
-"Upstox Breakout" tab:
+## Environment Variables
 
-```powershell
-$env:UPSTOX_ACCESS_TOKEN = "your_upstox_access_token"
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `ZERODHA_API_KEY` | Optional | Breakout tab — Kite Connect API key |
+| `ZERODHA_ACCESS_TOKEN` | Optional | Breakout tab — daily session token |
+| `APIFY_API_KEY` | Optional | Fundamentals — Apify screener actor fallback |
+| `TRADINGVIEW_USERNAME` | Optional | TradingView login for tvDatafeed |
+| `TRADINGVIEW_PASSWORD` | Optional | TradingView login for tvDatafeed |
+
+## Feature Flags (`config.py`)
+
+```python
+ENABLE_ZERODHA         = True   # set False to force yfinance-only in Breakout tab
+ENABLE_TRADINGVIEW     = True
+ENABLE_APIFY_SCREENER  = True
+ENABLE_NSE_PYTHON_HIST = True
 ```
-
-The tab scans Nifty 500 + Microcap 250 using Upstox daily candles and ranks
-fresh breakouts.
 
 ## Project Structure
+
 ```
-scanner/
-├── CLAUDE.md              AI agent instructions
+scanner-z/
 ├── README.md
 ├── requirements.txt
-├── main.py                FastAPI app + SSE stream + APScheduler
-├── scanner.py             Core scanning logic (filters, indicators, ranking)
-├── tickers.py             ~260 NSE ticker symbols (update quarterly)
-└── templates/
-    └── index.html         Bootstrap 5 dark dashboard
+├── runtime.txt
+├── render.yaml
+├── main.py                   FastAPI app entry point + lifespan + router includes
+├── config.py                 All tunable parameters and feature flags
+├── scanner.py                Core OHLCV scanning engine (Swing, Momentum, Morning Star)
+├── data_sources.py           Multi-source data clients (NSE, Screener.in, TradingView, …)
+├── tickers.py                Nifty 500 + Microcap 250 ticker lists
+├── sme_tickers.py            NSE Emerge + BSE SME ticker lists
+├── sector_map.py             Sector → ticker mapping for sector momentum
+├── shared_state.py           Shared mutable state (scanner instances, scan dicts, locks)
+├── cache.py                  OHLCV disk cache with incremental update logic
+├── routes/
+│   ├── breakout.py           Tab: Breakout Finder (Zerodha + yfinance)
+│   ├── swing_trades.py       Tab: Swing Trades
+│   ├── stock_momentum.py     Tab: Stock Momentum
+│   ├── morning_momentum.py   Tab: Morning Star
+│   ├── sector_momentum.py    Tab: Sector Momentum
+│   ├── fundamentals.py       Tab: Fundamentals
+│   ├── sme.py                Tab: SME Fundamentals
+│   ├── misc.py               Config, cache management, tab-active, root
+│   └── utils.py              Shared helpers (date validation, SSE, stop-loss, industry)
+├── templates/
+│   └── index.html            Single-page Bootstrap 5 dark dashboard
+├── cache/
+│   ├── ohlcv/                Per-ticker OHLCV parquet files
+│   └── sme/                  SME fundamental cache
+└── docs/
+    ├── breakout.md           Breakout filter criteria
+    ├── swing_trades.md       Swing trade filter criteria
+    ├── stock_momentum.md     Momentum filter criteria
+    ├── morning_momentum.md   Morning Star pattern criteria
+    ├── sector_momentum.md    Sector score formula
+    ├── fundamentals.md       Fundamental scoring rubric
+    └── sme.md                SME scoring rubric
 ```
 
-## Updating the Ticker List
-Download the latest constituent list from NSE and update `tickers.py`:
+## Updating Ticker Lists
+
 ```
-https://www.niftyindices.com/IndexConstituents/ind_nifty500list.csv
+Nifty 500:   https://www.niftyindices.com/IndexConstituents/ind_nifty500list.csv
+Microcap 250: https://www.niftyindices.com/IndexConstituents/ind_niftymicrocap250_list.csv
 ```
-Append `.NS` to each symbol for Yahoo Finance compatibility.
+
+Update `tickers.py` quarterly. Append `.NS` to each symbol for yfinance compatibility.
 
 ## Notes
-- No API key required — yfinance scrapes Yahoo Finance
-- P/E data may be unavailable (`None`) for some stocks; they are skipped
-- Sector strength is calculated relative to the median 20-day return of all scanned stocks
-- Run during NSE trading hours (09:15–15:30 IST) for intraday volume accuracy
+
+- Run during NSE trading hours (09:15–15:30 IST) for live volume accuracy
+- Breakout tab historical date picker: select any past date to see breakouts as of that date
+- Morning Star tab also supports historical date picker
+- Fundamentals data is cached for 48 h (Screener.in); hit Refresh to force delta update
 
