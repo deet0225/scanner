@@ -1,13 +1,45 @@
 """
-routes/upstox_breakout.py -- Tab: Breakout Finder
+routes/breakout.py -- Tab: Breakout Finder
 =================================================
-Finds fresh daily breakouts across Nifty 500 + Microcap 250 using Zerodha
-Kite Connect historical candle data.
+Scans Nifty 500 + Microcap 250 (750 tickers) for high-quality chart-pattern
+breakouts suitable for swing trading. Each stock passes through four ordered
+stages; failure at any stage drops the stock immediately.
+
+Scan pipeline
+-------------
+Stage 0 — Market Regime Gate (scan-level; aborts entire scan if market is bearish)
+  a. Nifty500 daily EMA(20) > EMA(50)
+  b. Nifty500 RSI(14) > 50 on at least 2 of the last 3 sessions
+  Source: ^CRSLDX (Yahoo Finance), fallback NIFTYBEES.NS / JUNIORBEES.NS
+
+Stage 1 — Fast Daily Gates (per-stock; cheap, runs first)
+  1. Price ≥ ₹20
+  2. Volume today ≥ 1.6× 20-day average
+  3. RSI(14) between 55 and 80
+  4. ADX(14) ≥ 22
+  5. Close > EMA(20) > EMA(50)
+  6. Candle close in top 50% of day's High–Low range
+
+Stage 2 — Weekly Trend Gate (per-stock; confirms multi-week uptrend)
+  7. Weekly close > weekly EMA(20)
+  8. Weekly RSI(14) ≥ 55
+
+Stage 3 — Pattern Detection (per-stock; expensive, runs last)
+  Detects 5 patterns on historical bars (today excluded):
+    Cup & Handle · Ascending Triangle · Bull Flag · Flat Base · Rectangle
+  Stock qualifies only if today's close ≥ pivot × 1.0025 (≥ 0.25% above pivot).
+  Best pattern by quality score is selected when multiple match.
 
 API routes
 ----------
 GET  /api/breakout          — latest breakout results (auto-triggers first run)
 POST /api/breakout/rescan   — force fresh breakout scan
+
+API response includes
+---------------------
+stocks[]        — up to 100 qualifying stocks sorted by composite score
+regime_ok       — bool: whether the market regime check passed
+regime_summary  — human-readable regime description (EMA / RSI values)
 
 Required environment variables
 ------------------------------
@@ -39,13 +71,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Pattern-based swing trade gates
-BK_PIVOT_MIN_PCT   = 0.10   # min % close must be above pattern pivot
-BK_VOL_RATIO_MIN   = 1.4    # today vol >= 1.4× 20D avg (pattern already confirms structure)
-BK_RSI_MIN         = 52.0   # minimum RSI
+BK_PIVOT_MIN_PCT   = 0.25   # min % close must be above pattern pivot (was 0.10; filters false-breakout touches)
+BK_VOL_RATIO_MIN   = 1.6    # today vol >= 1.6× 20D avg (was 1.4; higher conviction on breakout day)
+BK_RSI_MIN         = 55.0   # minimum RSI (was 52; early-momentum zone starts at 55)
 BK_RSI_MAX         = 80.0   # maximum RSI (avoid overbought)
-BK_ADX_MIN         = 18.0   # minimum ADX (trend has direction)
+BK_ADX_MIN         = 22.0   # minimum ADX (was 18; 22 = trend properly established, not just forming)
 BK_MIN_PRICE       = 20.0   # price floor in ₹ (no penny stocks)
-BK_CANDLE_BODY_MIN = 0.40   # close in top 40% of day's High-Low range
+BK_CANDLE_BODY_MIN = 0.50   # close in top 50% of day's High-Low range (was 0.40; stronger breakout candle)
+BK_WEEKLY_RSI_MIN  = 55.0   # weekly RSI(14) minimum — weekly trend must be bullish
 BK_MIN_ROWS        = 120    # minimum OHLCV rows required
 BK_MAX_WORKERS     = 6
 
@@ -292,13 +325,16 @@ _scan_state: dict = {
     "n500_count": 0,
     "mc_count": 0,
     "source": "Zerodha",
+    "regime_ok": None,
+    "regime_summary": "",
     "criteria": {
         "patterns":        ["Cup & Handle", "Ascending Triangle", "Bull Flag", "Flat Base", "Rectangle"],
         "pivot_min_pct":   BK_PIVOT_MIN_PCT,
         "vol_ratio_min":   BK_VOL_RATIO_MIN,
-        "rsi_range":       f"{BK_RSI_MIN}–{BK_RSI_MAX}",
+        "rsi_range":       f"{BK_RSI_MIN}\u2013{BK_RSI_MAX}",
         "adx_min":         BK_ADX_MIN,
         "min_price":       BK_MIN_PRICE,
+        "weekly_rsi_min":  BK_WEEKLY_RSI_MIN,
     },
 }
 
@@ -575,6 +611,86 @@ def _calc_score(
     return round(score, 2)
 
 
+def _check_bk_regime(from_date: str, to_date: str) -> "tuple[bool, str]":
+    """
+    Check Nifty500 market regime before running the breakout scan.
+
+    Two conditions — both must pass:
+      a. Nifty500 daily EMA(20) > EMA(50)              — medium-term uptrend
+      b. Nifty500 RSI(14) > 50 on at least 2/3 recent sessions  — momentum healthy
+
+    Tries ^CRSLDX (Yahoo Finance index), falls back to NIFTYBEES.NS ETF.
+    If data is unavailable, regime is assumed OK so the scan proceeds.
+
+    Returns (regime_ok: bool, regime_summary: str).
+    """
+    _BENCH_SYMS = ["^CRSLDX", "NIFTYBEES.NS", "JUNIORBEES.NS"]
+    bench: "pd.DataFrame | None" = None
+    used_sym = ""
+    for sym in _BENCH_SYMS:
+        try:
+            p1  = int(datetime.fromisoformat(from_date + "T00:00:00").timestamp())
+            p2  = int(datetime.fromisoformat(to_date   + "T23:59:59").timestamp())
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+            r   = _yf_session.get(
+                url, params={"period1": p1, "period2": p2, "interval": "1d"}, timeout=18,
+            )
+            if r.status_code != 200:
+                continue
+            body   = r.json()
+            result = (body.get("chart") or {}).get("result") or []
+            if not result:
+                continue
+            ts_list = result[0].get("timestamp") or []
+            quote   = result[0].get("indicators", {}).get("quote", [{}])[0]
+            adj_cl  = result[0].get("indicators", {}).get("adjclose", [{}])
+            closes  = (adj_cl[0].get("adjclose") if adj_cl else None) or quote.get("close", [])
+            records = []
+            for i, ts in enumerate(ts_list):
+                try:
+                    c = float((closes or [])[i] or 0)
+                    if c > 0:
+                        records.append({"Date": pd.Timestamp(ts, unit="s"), "Close": c})
+                except (IndexError, TypeError, ValueError):
+                    pass
+            if len(records) >= 60:
+                bench   = pd.DataFrame(records).sort_values("Date").reset_index(drop=True)
+                used_sym = sym
+                logger.info("Regime benchmark %s: %d rows", sym, len(records))
+                break
+        except Exception as exc:
+            logger.debug("Regime fetch %s: %s", sym, exc)
+
+    if bench is None or len(bench) < 60:
+        logger.warning("Regime check skipped — benchmark data unavailable; scan proceeds.")
+        return True, "Regime check skipped (no benchmark data)"
+
+    bc    = bench["Close"].astype(float)
+    ema20 = float(bc.ewm(span=20, adjust=False).mean().iloc[-1])
+    ema50 = float(bc.ewm(span=50, adjust=False).mean().iloc[-1])
+    rsi_s = ta.momentum.RSIIndicator(close=bc, window=14, fillna=False).rsi()
+    last3 = rsi_s.iloc[-3:]
+    days_above_50 = int((last3 > 50).sum())
+
+    ema_ok = ema20 > ema50
+    rsi_ok = days_above_50 >= 2
+
+    summary = (
+        f"EMA20={ema20:.0f} {'>' if ema_ok else '<='} EMA50={ema50:.0f} | "
+        f"RSI>50 on {days_above_50}/3 recent sessions"
+    )
+
+    if not ema_ok:
+        logger.info("Regime FAIL (%s): EMA20 %.2f <= EMA50 %.2f", used_sym, ema20, ema50)
+        return False, f"Market in downtrend \u2014 {summary}"
+    if not rsi_ok:
+        logger.info("Regime FAIL (%s): RSI>50 only %d/3 days", used_sym, days_above_50)
+        return False, f"Market momentum weak \u2014 {summary}"
+
+    logger.info("Regime OK (%s): %s", used_sym, summary)
+    return True, f"Bullish \u2014 {summary}"
+
+
 def _analyze_symbol(ticker: str, from_index: str, from_date: str, to_date: str,
                     live_quote: "dict | None" = None,
                     target_date: "_date_type | None" = None) -> "dict | None":
@@ -660,6 +776,30 @@ def _analyze_symbol(ticker: str, from_index: str, from_date: str, to_date: str,
     if candle_body_pct < BK_CANDLE_BODY_MIN:
         return None
 
+    # ── Weekly trend gate ──────────────────────────────────────────────────
+    # Requires: weekly close > weekly EMA20  AND  weekly RSI(14) > BK_WEEKLY_RSI_MIN
+    # Ensures the stock is in a genuine weekly uptrend — not just a one-day daily spike.
+    _df_w = df.copy()
+    if not pd.api.types.is_datetime64_any_dtype(_df_w["Date"]):
+        _df_w["Date"] = pd.to_datetime(_df_w["Date"])
+    _df_w = _df_w.set_index("Date")
+    weekly = (
+        _df_w.resample("W-FRI")
+             .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+             .dropna(subset=["Close"])
+    )
+    if len(weekly) >= 20:
+        w_close_s = weekly["Close"].astype(float)
+        w_ema20   = w_close_s.ewm(span=20, adjust=False, min_periods=20).mean()
+        w_e20_val = float(w_ema20.iloc[-1])
+        w_cls_val = float(w_close_s.iloc[-1])
+        if not pd.isna(w_e20_val) and w_cls_val <= w_e20_val:
+            return None   # weekly close below weekly EMA20 — not in uptrend
+        w_rsi_s   = ta.momentum.RSIIndicator(close=w_close_s, window=14, fillna=False).rsi()
+        w_rsi_val = float(w_rsi_s.iloc[-1]) if pd.notna(w_rsi_s.iloc[-1]) else 0.0
+        if w_rsi_val < BK_WEEKLY_RSI_MIN:
+            return None   # weekly momentum insufficient
+
     # ── Pattern detection (expensive — runs only when all fast gates pass) ──
     h_hist = high.values[:-1]
     l_hist = low.values[:-1]
@@ -704,9 +844,16 @@ def _analyze_symbol(ticker: str, from_index: str, from_date: str, to_date: str,
     risk_amt = last_close - stop_loss
     risk_pct = (risk_amt / last_close) * 100.0 if last_close > 0 else None
 
-    target_price = (last_close + 2.5 * last_atr) if last_atr > 0 else None
-    rr_ratio     = ((target_price - last_close) / risk_amt
-                    if (target_price and risk_amt > 0) else None)
+    # Pattern-depth projection: pivot + pattern_height gives a measured-move target.
+    # This is more accurate for swing trades than a flat ATR multiple because it
+    # reflects the actual energy stored in the pattern (bigger pattern → bigger move).
+    # We also compute an ATR-based target and take the higher of the two.
+    pattern_target = pivot * (1.0 + pattern_depth_pct / 100.0) if pattern_depth_pct > 0 else None
+    atr_target     = (last_close + 2.5 * last_atr) if last_atr > 0 else None
+    candidates     = [t for t in (pattern_target, atr_target) if t is not None and t > last_close]
+    target_price   = max(candidates) if candidates else None
+    rr_ratio       = ((target_price - last_close) / risk_amt
+                      if (target_price and risk_amt > 0) else None)
 
     score = _calc_score(
         vol_ratio, last_rsi, last_adx,
@@ -770,6 +917,20 @@ def _run_breakout_scan_blocking(target_date: "_date_type | None" = None) -> dict
     to_date_s   = to_date.strftime("%Y-%m-%d")
     from_date_s = from_date.strftime("%Y-%m-%d")
 
+    # ── Market regime gate ────────────────────────────────────────────────
+    # Abort scan early when Nifty500 is in a downtrend — pattern breakouts
+    # in a bearish market have a very high failure rate.
+    regime_ok, regime_summary = _check_bk_regime(from_date_s, to_date_s)
+    if not regime_ok:
+        logger.warning("Breakout scan aborted — bearish market regime: %s", regime_summary)
+        return {
+            "stocks": [], "total": 0, "n500_count": 0, "mc_count": 0,
+            "source":         "Zerodha" if _zerodha.enabled else "yfinance",
+            "regime_ok":      False,
+            "regime_summary": regime_summary,
+            "error":          None,
+        }
+
     # Fetch live quotes only in live mode (Zerodha only)
     live_quotes: dict = {}
     if target_date is None and _zerodha.enabled:
@@ -783,12 +944,14 @@ def _run_breakout_scan_blocking(target_date: "_date_type | None" = None) -> dict
 
     all_rows = sorted(n500 + mc, key=lambda x: x.get("score", 0.0), reverse=True)
     return {
-        "stocks":     all_rows[:100],
-        "total":      len(all_rows),
-        "n500_count": len(n500),
-        "mc_count":   len(mc),
-        "source":     source,
-        "error":      None,
+        "stocks":         all_rows[:100],
+        "total":          len(all_rows),
+        "n500_count":     len(n500),
+        "mc_count":       len(mc),
+        "source":         source,
+        "regime_ok":      True,
+        "regime_summary": regime_summary,
+        "error":          None,
     }
 
 
@@ -804,15 +967,17 @@ async def _run_breakout_scan() -> None:
             payload = await loop.run_in_executor(None, _run_breakout_scan_blocking)
             now_ist = datetime.now().strftime("%Y-%m-%d %H:%M:%S IST")
             _scan_state.update({
-                "stocks": payload.get("stocks") or [],
-                "total": payload.get("total") or 0,
-                "n500_count": payload.get("n500_count") or 0,
-                "mc_count": payload.get("mc_count") or 0,
-                "error": payload.get("error"),
-                "status": "error" if payload.get("error") else "complete",
-                "scan_stage": "Ready" if not payload.get("error") else "Configuration required",
-                "last_updated": now_ist,
-                "scan_count": _scan_state.get("scan_count", 0) + 1,
+                "stocks":         payload.get("stocks") or [],
+                "total":          payload.get("total") or 0,
+                "n500_count":     payload.get("n500_count") or 0,
+                "mc_count":       payload.get("mc_count") or 0,
+                "error":          payload.get("error"),
+                "status":         "error" if payload.get("error") else "complete",
+                "scan_stage":     "Ready" if not payload.get("error") else "Configuration required",
+                "last_updated":   now_ist,
+                "scan_count":     _scan_state.get("scan_count", 0) + 1,
+                "regime_ok":      payload.get("regime_ok"),
+                "regime_summary": payload.get("regime_summary", ""),
             })
         except Exception as exc:
             logger.error("Zerodha breakout scan failed: %s", exc, exc_info=True)
