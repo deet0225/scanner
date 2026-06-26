@@ -26,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, date as _date_type
 from threading import Lock
 
+import numpy as np
 import pandas as pd
 import requests
 import ta
@@ -37,17 +38,16 @@ from tickers import NIFTY500_TICKERS, NIFTY_MICROCAP250_TICKERS
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Breakout gates — tuned for swing trading
-BK_LOOKBACK_DAYS     = 50     # 50-day high breakout (more selective than 20D)
-BK_BREAKOUT_MIN_PCT  = 0.3    # must close at least 0.3% above 50D high
-BK_VOL_RATIO_MIN     = 1.5    # today vol >= 1.5× 20D avg vol
-BK_RSI_MIN           = 55.0   # minimum RSI (momentum present)
-BK_RSI_MAX           = 80.0   # maximum RSI (avoid overbought)
-BK_ADX_MIN           = 20.0   # minimum ADX (trend has direction)
-BK_MIN_PRICE         = 20.0   # price floor in ₹ (no penny stocks)
-BK_CANDLE_BODY_MIN   = 0.45   # close in top 45% of day's High-Low range
-BK_MIN_ROWS          = 120    # minimum OHLCV rows required
-BK_MAX_WORKERS       = 6
+# Pattern-based swing trade gates
+BK_PIVOT_MIN_PCT   = 0.10   # min % close must be above pattern pivot
+BK_VOL_RATIO_MIN   = 1.4    # today vol >= 1.4× 20D avg (pattern already confirms structure)
+BK_RSI_MIN         = 52.0   # minimum RSI
+BK_RSI_MAX         = 80.0   # maximum RSI (avoid overbought)
+BK_ADX_MIN         = 18.0   # minimum ADX (trend has direction)
+BK_MIN_PRICE       = 20.0   # price floor in ₹ (no penny stocks)
+BK_CANDLE_BODY_MIN = 0.40   # close in top 40% of day's High-Low range
+BK_MIN_ROWS        = 120    # minimum OHLCV rows required
+BK_MAX_WORKERS     = 6
 
 
 class _ZerodhaClient:
@@ -293,44 +293,283 @@ _scan_state: dict = {
     "mc_count": 0,
     "source": "Zerodha",
     "criteria": {
-        "lookback_days":    BK_LOOKBACK_DAYS,
-        "breakout_min_pct": BK_BREAKOUT_MIN_PCT,
-        "vol_ratio_min":    BK_VOL_RATIO_MIN,
-        "rsi_min":          BK_RSI_MIN,
-        "rsi_max":          BK_RSI_MAX,
-        "adx_min":          BK_ADX_MIN,
-        "min_price":        BK_MIN_PRICE,
+        "patterns":        ["Cup & Handle", "Ascending Triangle", "Bull Flag", "Flat Base", "Rectangle"],
+        "pivot_min_pct":   BK_PIVOT_MIN_PCT,
+        "vol_ratio_min":   BK_VOL_RATIO_MIN,
+        "rsi_range":       f"{BK_RSI_MIN}–{BK_RSI_MAX}",
+        "adx_min":         BK_ADX_MIN,
+        "min_price":       BK_MIN_PRICE,
     },
 }
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# Pattern detection helpers
+# All take numpy arrays of HISTORICAL data (today’s bar excluded).
+# Return: (detected, pivot, quality 0–1, depth_pct, duration_bars)
+# ───────────────────────────────────────────────────────────────────────────
+
+def _det_flat_base(
+    h: "np.ndarray", l: "np.ndarray", c: "np.ndarray", v: "np.ndarray",
+) -> "tuple[bool, float, float, float, int]":
+    """Flat Base: 25-50 bar tight consolidation, today closes above the base high."""
+    n = len(c)
+    best: "tuple | None" = None
+    for blen in (50, 40, 30, 25):
+        if n < blen:
+            continue
+        bh = h[-blen:];  bl = l[-blen:];  bc = c[-blen:];  bv = v[-blen:]
+        base_high = float(bh.max())
+        base_low  = float(bl.min())
+        if base_high <= 0:
+            continue
+        depth = (base_high - base_low) / base_high
+        if depth > 0.12:          # max 12% depth
+            continue
+        c_mean = float(bc.mean());  c_std = float(bc.std())
+        if c_mean <= 0 or c_std / c_mean > 0.038:   # tight closes required
+            continue
+        v1 = float(bv[:blen // 2].mean());  v2 = float(bv[blen // 2:].mean())
+        vol_contr = v1 > 0 and v2 < v1
+        quality = (
+            (0.12 - depth) / 0.12 * 0.35
+            + max(0.0, (0.038 - c_std / c_mean) / 0.038) * 0.40
+            + (0.25 if vol_contr else 0.0)
+        )
+        quality = max(0.0, min(1.0, quality))
+        if best is None or quality > best[2]:
+            best = (base_high, round(depth * 100, 1), quality, blen)
+    if best:
+        return True, round(best[0], 2), round(best[2], 3), best[1], best[3]
+    return False, 0.0, 0.0, 0.0, 0
+
+
+def _det_rectangle(
+    h: "np.ndarray", l: "np.ndarray", c: "np.ndarray", v: "np.ndarray",
+) -> "tuple[bool, float, float, float, int]":
+    """Rectangle Breakout: 2+ resistance + 2+ support touches, today above resistance."""
+    n = len(c)
+    best: "tuple | None" = None
+    for rlen in (55, 45, 35, 25, 18):
+        if n < rlen:
+            continue
+        rh = h[-rlen:];  rl = l[-rlen:];  rv = v[-rlen:]
+        resistance = float(rh.max());  support = float(rl.min())
+        if support <= 0 or resistance <= 0:
+            continue
+        width = (resistance - support) / resistance
+        if width < 0.07 or width > 0.25:
+            continue
+        rtol = resistance * 0.985;  stol = support * 1.015
+        r_touches = int((rh >= rtol).sum())
+        s_touches = int((rl <= stol).sum())
+        if r_touches < 2 or s_touches < 2:
+            continue
+        top_h = rh[rh >= rtol]
+        if len(top_h) > 1 and float(top_h.std()) / resistance > 0.020:
+            continue
+        v_pre  = float(v[max(0, n - rlen - 20): n - rlen].mean()) if n > rlen + 5 else float(rv.mean()) * 1.1
+        v_rect = float(rv.mean())
+        vol_ok = v_pre > 0 and v_rect < v_pre * 0.85
+        quality = (
+            min(1.0, (r_touches + s_touches) / 6) * 0.35
+            + max(0.0, 1.0 - width / 0.25) * 0.40
+            + (0.25 if vol_ok else 0.0)
+        )
+        quality = max(0.0, min(1.0, quality))
+        if best is None or quality > best[2]:
+            best = (resistance, round(width * 100, 1), quality, rlen)
+    if best:
+        return True, round(best[0], 2), round(best[2], 3), best[1], best[3]
+    return False, 0.0, 0.0, 0.0, 0
+
+
+def _det_ascending_triangle(
+    h: "np.ndarray", l: "np.ndarray", c: "np.ndarray",
+) -> "tuple[bool, float, float, float, int]":
+    """Ascending Triangle: flat resistance (2+ touches) + rising support, converging."""
+    n = len(c)
+    best: "tuple | None" = None
+    for alen in (55, 45, 35, 25):
+        if n < alen:
+            continue
+        ah = h[-alen:];  al = l[-alen:]
+        resistance = float(ah.max())
+        if resistance <= 0:
+            continue
+        rtol = resistance * 0.985
+        r_touches = int((ah >= rtol).sum())
+        if r_touches < 2:
+            continue
+        top_h = ah[ah >= rtol]
+        res_std_pct = float(top_h.std()) / resistance if len(top_h) > 1 else 0.0
+        if res_std_pct > 0.018:
+            continue
+        x = np.arange(alen, dtype=float)
+        coeffs = np.polyfit(x, al, 1)
+        slope = float(coeffs[0])
+        if slope <= 0:
+            continue
+        support_0   = float(coeffs[1])
+        support_now = support_0 + slope * (alen - 1)
+        band_start  = max(0.0001, resistance - support_0)
+        convergence = (support_now - support_0) / band_start
+        if convergence < 0.08:
+            continue
+        depth = (resistance - float(al.min())) / resistance
+        quality = (
+            min(1.0, r_touches / 4) * 0.40
+            + max(0.0, (0.018 - res_std_pct) / 0.018) * 0.35
+            + min(1.0, convergence / 0.4) * 0.25
+        )
+        quality = max(0.0, min(1.0, quality))
+        if best is None or quality > best[2]:
+            best = (resistance, round(depth * 100, 1), quality, alen)
+    if best:
+        return True, round(best[0], 2), round(best[2], 3), best[1], best[3]
+    return False, 0.0, 0.0, 0.0, 0
+
+
+def _det_bull_flag(
+    h: "np.ndarray", l: "np.ndarray", c: "np.ndarray", v: "np.ndarray",
+) -> "tuple[bool, float, float, float, int]":
+    """Bull Flag: sharp pole (8%+ in ≤13 bars) + tight sideways flag + breakout."""
+    n = len(c)
+    best: "tuple | None" = None
+    for flen in (5, 7, 10, 14, 18):
+        if n < flen + 8:
+            continue
+        fh = h[-flen:];  fl = l[-flen:];  fc = c[-flen:];  fv = v[-flen:]
+        flag_high = float(fh.max());  flag_low = float(fl.min())
+        if flag_high <= 0:
+            continue
+        flag_range = (flag_high - flag_low) / flag_high
+        if flag_range > 0.09:
+            continue
+        x = np.arange(flen, dtype=float)
+        flag_slope = float(np.polyfit(x, fc, 1)[0]) / flag_high
+        if flag_slope > 0.004:   # flag must not be sharply rising
+            continue
+        for plen in (5, 7, 10, 13):
+            ps = n - flen - plen
+            if ps < 3:
+                continue
+            ph = h[ps: n - flen];  pl_arr = l[ps: n - flen]
+            pole_high  = float(ph.max());  pole_low_v = float(pl_arr.min())
+            if pole_low_v <= 0:
+                continue
+            pole_move = (pole_high - pole_low_v) / pole_low_v
+            if pole_move < 0.08:
+                continue
+            if int(np.argmax(ph)) < plen // 3:   # peak must be in latter half of pole
+                continue
+            retrace_abs = pole_high - flag_low
+            if pole_high > pole_low_v and retrace_abs > (pole_high - pole_low_v) * 0.55:
+                continue
+            pv_avg = float(v[ps: n - flen].mean())
+            fv_avg = float(fv.mean())
+            vol_dry = pv_avg > 0 and fv_avg < pv_avg * 0.75
+            quality = (
+                min(1.0, pole_move / 0.15) * 0.35
+                + (0.09 - min(0.09, flag_range)) / 0.09 * 0.30
+                + (0.20 if vol_dry else 0.0)
+                + min(1.0, flen / 12) * 0.15
+            )
+            quality = max(0.0, min(1.0, quality))
+            if best is None or quality > best[2]:
+                best = (flag_high, round(flag_range * 100, 1), quality, flen)
+    if best:
+        return True, round(best[0], 2), round(best[2], 3), best[1], best[3]
+    return False, 0.0, 0.0, 0.0, 0
+
+
+def _det_cup_and_handle(
+    h: "np.ndarray", l: "np.ndarray", c: "np.ndarray", v: "np.ndarray",
+) -> "tuple[bool, float, float, float, int]":
+    """Cup & Handle: U-shaped cup (10-45% deep) + handle pullback (3-20%), today at pivot."""
+    n = len(c)
+    if n < 55:
+        return False, 0.0, 0.0, 0.0, 0
+    best: "tuple | None" = None
+    for hlen in (5, 8, 12, 16, 20):
+        for clen in (40, 60, 80, 100):
+            total = clen + hlen
+            if total >= n:
+                continue
+            cs = n - total;  ce = cs + clen;  he = ce + hlen
+            if he > n:
+                continue
+            ch = h[cs:ce];  cl = l[cs:ce];  cc = c[cs:ce];  cv = v[cs:ce]
+            hh = h[ce:he];  hl = l[ce:he];  hv = v[ce:he]
+            q  = max(1, clen // 4)
+            lr = float(ch[:q].max());  rr = float(ch[3 * q:].max())
+            cup_bot = float(cl.min())
+            if lr <= 0 or rr <= 0 or cup_bot <= 0:
+                continue
+            if rr < lr * 0.97:      # right rim must match left rim
+                continue
+            depth = (lr - cup_bot) / lr
+            if depth < 0.10 or depth > 0.45:
+                continue
+            t = max(2, clen // 3)
+            outer_avg = (float(cc[:t].mean()) + float(cc[2 * t:].mean())) / 2
+            mid_avg   = float(cc[t: 2 * t].mean())
+            if mid_avg > outer_avg * 0.97:    # middle must be lower (U-shape)
+                continue
+            handle_high = float(hh.max());  handle_low = float(hl.min())
+            cup_mid = cup_bot + (lr - cup_bot) * 0.5
+            if handle_low < cup_mid:          # handle must stay in upper half
+                continue
+            retrace = (rr - handle_low) / rr
+            if retrace < 0.03 or retrace > 0.20:
+                continue
+            cup_vol_avg    = float(cv.mean())
+            handle_vol_avg = float(hv.mean())
+            vol_dry = cup_vol_avg > 0 and handle_vol_avg < cup_vol_avg * 0.85
+            pivot   = max(rr, handle_high)
+            quality = (
+                (1.0 - abs(depth - 0.25) / 0.25) * 0.25
+                + min(1.0, rr / lr) * 0.25
+                + max(0.0, (0.20 - retrace) / 0.20) * 0.20
+                + (0.15 if vol_dry else 0.0)
+                + min(1.0, clen / 80) * 0.15
+            )
+            quality = max(0.0, min(1.0, quality))
+            if best is None or quality > best[2]:
+                best = (pivot, round(depth * 100, 1), quality, clen + hlen)
+    if best:
+        return True, round(best[0], 2), round(best[2], 3), best[1], best[3]
+    return False, 0.0, 0.0, 0.0, 0
+
+
 def _calc_score(
-    breakout_pct: float, vol_ratio: float, rsi: float, adx: float,
+    vol_ratio: float, rsi: float, adx: float,
     is_52w_break: bool, candle_body_pct: float, pct_from_52w: float,
-    ema200_gap_pct: float,
+    ema200_gap_pct: float, pattern_quality: float, breakout_pct: float,
 ) -> float:
-    """Score 0–100+ indicating swing-trade breakout quality."""
+    """Composite score 0–160+ for swing-trade setup quality."""
     score = 0.0
-    # 1. Volume surge: 1.5x→5 pts, 3x→20 pts, 5x+→40 pts (capped)
+    # 1. Volume surge (max 40)
     score += min(max(vol_ratio - 1.0, 0.0), 4.0) * 10.0
-    # 2. 52-week high breakout: big bonus; proximity credit otherwise
+    # 2. 52-week high (max 30)
     if is_52w_break:
         score += 30.0
     else:
-        # pct_from_52w is negative; closer = more pts (max 10 at -0.5%)
         score += max(0.0, 10.0 + pct_from_52w * 1.5)
-    # 3. RSI sweet spot 60-72 scores highest; penalise above 72
+    # 3. RSI sweet spot 60-72 (max ~20)
     rsi_pts = max(0.0, rsi - 55.0) * 1.2
     if rsi > 72:
         rsi_pts -= (rsi - 72) * 2.5
     score += max(0.0, rsi_pts)
-    # 4. ADX trend strength (ADX20→0 pts, ADX50→30 pts)
-    score += min(max(adx - 20.0, 0.0), 30.0) * 1.0
-    # 5. Candle body quality (closed near top of range)
+    # 4. ADX trend strength (max 32)
+    score += min(max(adx - 18.0, 0.0), 32.0) * 1.0
+    # 5. Candle body quality (max 10)
     score += candle_body_pct * 10.0
-    # 6. Breakout margin above 50D high (0%→0, 5%+→15 pts)
-    score += min(max(breakout_pct, 0.0), 5.0) * 3.0
-    # 7. EMA200 alignment bonus (ema20 ahead of ema200 = longer uptrend)
+    # 6. Pattern quality (max 25)
+    score += pattern_quality * 25.0
+    # 7. Breakout margin above pivot (max 10)
+    score += min(max(breakout_pct, 0.0), 5.0) * 2.0
+    # 8. EMA200 alignment (max 6)
     if ema200_gap_pct > 0:
         score += min(ema200_gap_pct, 15.0) * 0.4
     return round(score, 2)
@@ -345,7 +584,7 @@ def _analyze_symbol(ticker: str, from_index: str, from_date: str, to_date: str,
     if len(df) < BK_MIN_ROWS:
         return None
 
-    # Patch / add today's candle with live data (live mode only)
+    # ── Live candle patch (live mode only) ────────────────────────────────
     if live_quote and target_date is None:
         today_ts = pd.Timestamp(datetime.now().date())
         last_date = df["Date"].iloc[-1]
@@ -365,11 +604,10 @@ def _analyze_symbol(ticker: str, from_index: str, from_date: str, to_date: str,
             }])
             df = pd.concat([df, new_row], ignore_index=True).sort_values("Date").reset_index(drop=True)
 
-    close  = df["Close"].astype(float)
-    high   = df["High"].astype(float)
-    low    = df["Low"].astype(float)
-    open_  = df["Open"].astype(float)
-    vol    = df["Volume"].astype(float)
+    close = df["Close"].astype(float)
+    high  = df["High"].astype(float)
+    low   = df["Low"].astype(float)
+    vol   = df["Volume"].astype(float)
 
     # ── Technical indicators ──────────────────────────────────────────
     ema20  = close.ewm(span=20,  adjust=False).mean()
@@ -383,7 +621,7 @@ def _analyze_symbol(ticker: str, from_index: str, from_date: str, to_date: str,
                  high=high, low=low, close=close, window=14, fillna=False
              ).adx()
 
-    if len(close) <= BK_LOOKBACK_DAYS + 1:
+    if len(close) < 55:
         return None
 
     last_close  = float(close.iloc[-1])
@@ -397,84 +635,109 @@ def _analyze_symbol(ticker: str, from_index: str, from_date: str, to_date: str,
     last_atr    = float(atr14.iloc[-1]) if pd.notna(atr14.iloc[-1]) else 0.0
     last_adx    = float(adx14.iloc[-1]) if pd.notna(adx14.iloc[-1]) else 0.0
 
-    # ── Rolling reference windows (excluding today) ───────────────────
-    prev_highs = high.iloc[-(BK_LOOKBACK_DAYS + 1):-1]
-    prev_lows  = low.iloc[-(BK_LOOKBACK_DAYS + 1):-1]
-    prev_vol20 = vol.iloc[-21:-1]            # 20-day avg vol (excludes today)
-    n52        = min(252, len(high) - 1)     # up to 252 trading days for 52W
-    w52_highs  = high.iloc[-(n52 + 1):-1]
+    avg_vol20   = float(vol.iloc[-21:-1].mean()) if len(vol) > 21 else 0.0
+    n52         = min(252, len(high) - 1)
+    high_52w    = float(high.iloc[-(n52 + 1):-1].max()) if n52 > 0 else last_close
+    prev_low_50 = float(low.iloc[-51:-1].min()) if len(low) > 51 else float(low.iloc[:-1].min())
 
-    prev_high_bk = float(prev_highs.max())
-    prev_low_bk  = float(prev_lows.min())
-    avg_vol20    = float(prev_vol20.mean())
-    high_52w     = float(w52_highs.max())
-
-    if prev_high_bk <= 0 or avg_vol20 <= 0 or last_close <= 0:
+    if last_close <= 0 or avg_vol20 <= 0:
         return None
 
-    # ── Derived metrics ───────────────────────────────────────────────
-    breakout_pct    = ((last_close / prev_high_bk) - 1.0) * 100.0
+    # ── Fast quality gates (cheap — run before expensive pattern detection) ──
+    if last_close < BK_MIN_PRICE:
+        return None
     vol_ratio       = last_vol / avg_vol20
     candle_range    = last_high - last_low
-    # Fraction of day's range captured above the low (1.0 = closed at high)
     candle_body_pct = (last_close - last_low) / candle_range if candle_range > 0.01 else 0.5
-    pct_from_52w    = ((last_close / high_52w) - 1.0) * 100.0 if high_52w > 0 else -999.0
-    is_52w_break    = pct_from_52w >= -0.5   # at or within 0.5% of 52W high
-    ema200_gap_pct  = ((last_ema20 / last_ema200) - 1.0) * 100.0 if last_ema200 > 0 else 0.0
-
-    # ── Hard gates (all must pass) ────────────────────────────────────
-    passed = (
-        last_close >= BK_MIN_PRICE                       # no penny stocks
-        and breakout_pct >= BK_BREAKOUT_MIN_PCT          # broke above 50D high
-        and vol_ratio >= BK_VOL_RATIO_MIN                # strong volume surge
-        and last_close > last_ema20 > last_ema50         # price above rising EMAs
-        and BK_RSI_MIN <= last_rsi <= BK_RSI_MAX         # momentum present, not overbought
-        and last_adx >= BK_ADX_MIN                       # directional trend strength
-        and candle_body_pct >= BK_CANDLE_BODY_MIN        # bullish close (not bearish wick)
-    )
-    if not passed:
+    if vol_ratio < BK_VOL_RATIO_MIN:
+        return None
+    if not (BK_RSI_MIN <= last_rsi <= BK_RSI_MAX):
+        return None
+    if last_adx < BK_ADX_MIN:
+        return None
+    if not (last_close > last_ema20 > last_ema50):
+        return None
+    if candle_body_pct < BK_CANDLE_BODY_MIN:
         return None
 
+    # ── Pattern detection (expensive — runs only when all fast gates pass) ──
+    h_hist = high.values[:-1]
+    l_hist = low.values[:-1]
+    c_hist = close.values[:-1]
+    v_hist = vol.values[:-1]
+    pivot_threshold = 1.0 + BK_PIVOT_MIN_PCT / 100.0
+
+    patterns: "list[tuple]" = []
+    _PATTERN_FNS = [
+        ("Cup & Handle",       lambda: _det_cup_and_handle(h_hist, l_hist, c_hist, v_hist)),
+        ("Ascending Triangle", lambda: _det_ascending_triangle(h_hist, l_hist, c_hist)),
+        ("Bull Flag",          lambda: _det_bull_flag(h_hist, l_hist, c_hist, v_hist)),
+        ("Flat Base",          lambda: _det_flat_base(h_hist, l_hist, c_hist, v_hist)),
+        ("Rectangle",          lambda: _det_rectangle(h_hist, l_hist, c_hist, v_hist)),
+    ]
+    for pname, pfn in _PATTERN_FNS:
+        try:
+            det, pivot, qual, depth_pct, dur = pfn()
+            if det and pivot > 0 and last_close >= pivot * pivot_threshold:
+                patterns.append((pname, pivot, qual, depth_pct, dur))
+        except Exception:
+            pass
+
+    if not patterns:
+        return None
+
+    # Best pattern by quality score
+    patterns.sort(key=lambda x: -x[2])
+    pattern_name, pivot, pattern_quality, pattern_depth_pct, pattern_duration = patterns[0]
+
+    breakout_pct   = ((last_close / pivot) - 1.0) * 100.0
+    pct_from_52w   = ((last_close / high_52w) - 1.0) * 100.0 if high_52w > 0 else -999.0
+    is_52w_break   = pct_from_52w >= -0.5
+    ema200_gap_pct = ((last_ema20 / last_ema200) - 1.0) * 100.0 if last_ema200 > 0 else 0.0
+
     # ── ATR-based stop loss ───────────────────────────────────────────
-    # Place stop below today's low with 0.5 ATR buffer
     atr_stop  = (last_low - 0.5 * last_atr) if last_atr > 0 else last_close * 0.95
     ema_stop  = last_ema20 * 0.98
-    stop_loss = max(atr_stop, ema_stop, prev_low_bk * 0.99)
-    stop_loss = max(stop_loss, last_close * 0.90)  # hard cap: max 10% drawdown
+    stop_loss = max(atr_stop, ema_stop, prev_low_50 * 0.99)
+    stop_loss = max(stop_loss, last_close * 0.90)
 
     risk_amt = last_close - stop_loss
     risk_pct = (risk_amt / last_close) * 100.0 if last_close > 0 else None
 
-    # Target: 2.5 ATR above close
     target_price = (last_close + 2.5 * last_atr) if last_atr > 0 else None
-    rr_ratio = ((target_price - last_close) / risk_amt
-                if (target_price and risk_amt > 0) else None)
+    rr_ratio     = ((target_price - last_close) / risk_amt
+                    if (target_price and risk_amt > 0) else None)
 
     score = _calc_score(
-        breakout_pct, vol_ratio, last_rsi, last_adx,
-        is_52w_break, candle_body_pct, pct_from_52w, ema200_gap_pct,
+        vol_ratio, last_rsi, last_adx,
+        is_52w_break, candle_body_pct, pct_from_52w,
+        ema200_gap_pct, pattern_quality, breakout_pct,
     )
 
     return {
-        "ticker":         f"{symbol}.NS",
-        "display_ticker": symbol,
-        "from_index":     from_index,
-        "price":          round(last_close, 2),
-        "breakout_pct":   round(breakout_pct, 2),
-        "vol_ratio":      round(vol_ratio, 2),
-        "rsi":            round(last_rsi, 2),
-        "adx":            round(last_adx, 2),
-        "ema20":          round(last_ema20, 2),
-        "ema50":          round(last_ema50, 2),
-        "ema200":         round(last_ema200, 2),
-        "atr":            round(last_atr, 2),
-        "stop_loss":      round(stop_loss, 2),
-        "risk_pct":       round(risk_pct, 2) if risk_pct is not None else None,
-        "target":         round(target_price, 2) if target_price else None,
-        "rr_ratio":       round(rr_ratio, 2) if rr_ratio is not None else None,
-        "is_52w_break":   is_52w_break,
-        "pct_from_52w":   round(pct_from_52w, 2),
-        "score":          score,
+        "ticker":            f"{symbol}.NS",
+        "display_ticker":    symbol,
+        "from_index":        from_index,
+        "pattern":           pattern_name,
+        "pattern_quality":   round(pattern_quality, 3),
+        "pattern_depth_pct": round(pattern_depth_pct, 1),
+        "pattern_days":      pattern_duration,
+        "price":             round(last_close, 2),
+        "breakout_pct":      round(breakout_pct, 2),
+        "vol_ratio":         round(vol_ratio, 2),
+        "rsi":               round(last_rsi, 2),
+        "adx":               round(last_adx, 2),
+        "ema20":             round(last_ema20, 2),
+        "ema50":             round(last_ema50, 2),
+        "ema200":            round(last_ema200, 2),
+        "atr":               round(last_atr, 2),
+        "stop_loss":         round(stop_loss, 2),
+        "risk_pct":          round(risk_pct, 2) if risk_pct is not None else None,
+        "target":            round(target_price, 2) if target_price else None,
+        "rr_ratio":          round(rr_ratio, 2) if rr_ratio is not None else None,
+        "is_52w_break":      is_52w_break,
+        "pct_from_52w":      round(pct_from_52w, 2),
+        "score":             score,
     }
 
 
