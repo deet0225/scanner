@@ -916,8 +916,8 @@
     </div>
     <span class="hist-badge" id="upb-hist-badge"></span>
     <button class="live-btn" id="upb-live-btn" onclick="upBreakClearDate()">&#9889; Live</button>
-    <div style="margin-left:auto; font-size:0.72rem; color:var(--text-muted); padding: 5px 12px;">
-      Source: Zerodha (yfinance fallback) &middot; Regime: Nifty500 EMA20&gt;EMA50 + RSI&gt;50 &middot; Patterns: Cup&amp;Handle &middot; Asc.Triangle &middot; Bull Flag &middot; Flat Base &middot; Rectangle &middot; Vol&ge;1.6&times; &middot; RSI 55&ndash;80 &middot; ADX&ge;22 &middot; Wkly RSI&ge;55 &middot; Pattern-depth Target
+    <div id="upb-criteria-pill" style="margin-left:auto; font-size:0.72rem; color:var(--text-muted); padding: 5px 12px;">
+      Source: Zerodha (yfinance fallback) &middot; Regime: Nifty500 EMA20&gt;EMA50 + RSI&gt;50(2/3) &middot; Patterns: Cup&amp;Handle &middot; Asc.Triangle &middot; Bull Flag &middot; Flat Base &middot; Rectangle &middot; Vol&ge;1.9&times; at breakout &middot; RSI 55&ndash;80 &middot; ADX&ge;22 &middot; Wkly RSI&ge;55 &middot; Close&ge;Open &middot; Close vs EMA20 &le; 12% &middot; Brk &le; 7% &middot; R:R &ge; 1.6
     </div>
   </div>
 
@@ -2140,6 +2140,8 @@ function upBreakLoad(force) {
   fetch(url)
     .then(function(r) { return r.json(); })
     .then(function(j) {
+      if (j && j.criteria) renderUpBreakCriteriaPill(j.criteria);
+
       var scanning = j.status === 'scanning' || j.status === 'initializing';
       var isHist   = !!document.getElementById('upb-date').value;
       document.getElementById('upb-scan-status').innerHTML =
@@ -2230,13 +2232,13 @@ function renderUpBreakRows(stocks) {
 
     // Volume
     var vol = s.vol_ratio != null ? Number(s.vol_ratio) : null;
-    var volCls = vol != null ? (vol >= 3 ? 'vs-sector-pos' : vol >= 1.4 ? 'de-ok' : '') : '';
+    var volCls = vol != null ? (vol >= 3 ? 'vs-sector-pos' : vol >= 1.9 ? 'de-ok' : '') : '';
 
     // RSI + ADX
     var rsi = s.rsi != null ? Number(s.rsi) : null;
     var rsiCls = rsi != null ? rsiClass(rsi) : '';
     var adx = s.adx != null ? Number(s.adx) : null;
-    var adxCls = adx != null ? (adx >= 35 ? 'vs-sector-pos' : adx >= 18 ? 'de-ok' : '') : '';
+    var adxCls = adx != null ? (adx >= 35 ? 'vs-sector-pos' : adx >= 22 ? 'de-ok' : '') : '';
 
     // Stop / Risk
     var risk = s.risk_pct != null ? Number(s.risk_pct).toFixed(1) + '%' : '--';
@@ -2246,7 +2248,7 @@ function renderUpBreakRows(stocks) {
       ? '&#8377;' + Number(s.target).toLocaleString('en-IN', {maximumFractionDigits:2})
       : '--';
     var rr = s.rr_ratio != null ? Number(s.rr_ratio).toFixed(1) + ':1' : '--';
-    var rrCls = s.rr_ratio != null ? (s.rr_ratio >= 2.5 ? 'vs-sector-pos' : s.rr_ratio >= 1.5 ? 'de-ok' : '') : '';
+    var rrCls = s.rr_ratio != null ? (s.rr_ratio >= 2.5 ? 'vs-sector-pos' : s.rr_ratio >= 1.6 ? 'de-ok' : '') : '';
 
     var priceCell = s.price != null
       ? '<span class="price-val">&#8377;' + Number(s.price).toLocaleString('en-IN', {maximumFractionDigits:2}) + '</span>'
@@ -2279,6 +2281,33 @@ function renderUpBreakRows(stocks) {
       '<td><span class="score-num">' + Number(s.score || 0).toFixed(1) + '</span></td>' +
       '</tr>';
   }).join('');
+}
+
+function renderUpBreakCriteriaPill(c) {
+  var el = document.getElementById('upb-criteria-pill');
+  if (!el || !c) return;
+
+  var pivot = Number(c.pivot_min_pct || 0).toFixed(2);
+  var vol = Number(c.breakout_vol_ratio_min || c.vol_ratio_min || 0).toFixed(1);
+  var adx = Number(c.adx_min || 0).toFixed(0);
+  var wrsi = Number(c.weekly_rsi_min || 0).toFixed(0);
+  var maxExt = Number(c.max_ema20_ext_pct || 0).toFixed(0);
+  var maxBrk = Number(c.max_breakout_pct || 0).toFixed(0);
+  var minRR = Number(c.min_rr_ratio || 0).toFixed(1);
+  var rsi = c.rsi_range || '55-80';
+
+  el.innerHTML =
+    'Source: Zerodha (yfinance fallback) &middot; Regime: Nifty500 EMA20&gt;EMA50 + RSI&gt;50(2/3)' +
+    ' &middot; Patterns: Cup&amp;Handle &middot; Asc.Triangle &middot; Bull Flag &middot; Flat Base &middot; Rectangle' +
+    ' &middot; Pivot+' + pivot + '%' +
+    ' &middot; Vol&ge;' + vol + '&times;' +
+    ' &middot; RSI ' + rsi +
+    ' &middot; ADX&ge;' + adx +
+    ' &middot; Wkly RSI&ge;' + wrsi +
+    ' &middot; Close&ge;Open' +
+    ' &middot; Close vs EMA20 &le; ' + maxExt + '%' +
+    ' &middot; Brk &le; ' + maxBrk + '%' +
+    ' &middot; R:R &ge; ' + minRR;
 }
 
 // ══════════════════════════ MORNING STAR ══════════════════════════════
