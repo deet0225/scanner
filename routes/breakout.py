@@ -79,6 +79,10 @@ BK_ADX_MIN         = 22.0   # minimum ADX (was 18; 22 = trend properly establish
 BK_MIN_PRICE       = 20.0   # price floor in ₹ (no penny stocks)
 BK_CANDLE_BODY_MIN = 0.50   # close in top 50% of day's High-Low range (was 0.40; stronger breakout candle)
 BK_WEEKLY_RSI_MIN  = 55.0   # weekly RSI(14) minimum — weekly trend must be bullish
+BK_BREAKOUT_VOL_RATIO_MIN = 1.9   # breakout-day volume confirmation near pivot (filters low-energy breaks)
+BK_MAX_BREAKOUT_PCT = 7.0         # avoid chasing already-extended breakouts
+BK_MAX_EMA20_EXT_PCT = 12.0       # close should not be too stretched above EMA20
+BK_MIN_RR_RATIO = 1.6             # minimum reward:risk for swing suitability
 BK_MIN_ROWS        = 120    # minimum OHLCV rows required
 BK_MAX_WORKERS     = 6
 
@@ -331,9 +335,13 @@ _scan_state: dict = {
         "patterns":        ["Cup & Handle", "Ascending Triangle", "Bull Flag", "Flat Base", "Rectangle"],
         "pivot_min_pct":   BK_PIVOT_MIN_PCT,
         "vol_ratio_min":   BK_VOL_RATIO_MIN,
+        "breakout_vol_ratio_min": BK_BREAKOUT_VOL_RATIO_MIN,
+        "max_breakout_pct": BK_MAX_BREAKOUT_PCT,
         "rsi_range":       f"{BK_RSI_MIN}\u2013{BK_RSI_MAX}",
         "adx_min":         BK_ADX_MIN,
         "min_price":       BK_MIN_PRICE,
+        "max_ema20_ext_pct": BK_MAX_EMA20_EXT_PCT,
+        "min_rr_ratio":    BK_MIN_RR_RATIO,
         "weekly_rsi_min":  BK_WEEKLY_RSI_MIN,
     },
 }
@@ -344,6 +352,20 @@ _scan_state: dict = {
 # All take numpy arrays of HISTORICAL data (today’s bar excluded).
 # Return: (detected, pivot, quality 0–1, depth_pct, duration_bars)
 # ───────────────────────────────────────────────────────────────────────────
+
+def _count_spaced_touches(mask: "np.ndarray", min_gap: int = 3) -> int:
+    """Count distinct level touches, ignoring clustered consecutive bars."""
+    idx = np.flatnonzero(mask)
+    if len(idx) == 0:
+        return 0
+    count = 1
+    last = int(idx[0])
+    for i in idx[1:]:
+        ii = int(i)
+        if ii - last >= min_gap:
+            count += 1
+            last = ii
+    return count
 
 def _det_flat_base(
     h: "np.ndarray", l: "np.ndarray", c: "np.ndarray", v: "np.ndarray",
@@ -397,8 +419,8 @@ def _det_rectangle(
         if width < 0.07 or width > 0.25:
             continue
         rtol = resistance * 0.985;  stol = support * 1.015
-        r_touches = int((rh >= rtol).sum())
-        s_touches = int((rl <= stol).sum())
+        r_touches = _count_spaced_touches(rh >= rtol, min_gap=3)
+        s_touches = _count_spaced_touches(rl <= stol, min_gap=3)
         if r_touches < 2 or s_touches < 2:
             continue
         top_h = rh[rh >= rtol]
@@ -434,7 +456,7 @@ def _det_ascending_triangle(
         if resistance <= 0:
             continue
         rtol = resistance * 0.985
-        r_touches = int((ah >= rtol).sum())
+        r_touches = _count_spaced_touches(ah >= rtol, min_gap=3)
         if r_touches < 2:
             continue
         top_h = ah[ah >= rtol]
@@ -451,6 +473,10 @@ def _det_ascending_triangle(
         band_start  = max(0.0001, resistance - support_0)
         convergence = (support_now - support_0) / band_start
         if convergence < 0.08:
+            continue
+        early_low = float(np.median(al[: max(3, alen // 4)]))
+        late_low  = float(np.median(al[-max(3, alen // 4):]))
+        if late_low <= early_low:
             continue
         depth = (resistance - float(al.min())) / resistance
         quality = (
@@ -485,6 +511,8 @@ def _det_bull_flag(
         x = np.arange(flen, dtype=float)
         flag_slope = float(np.polyfit(x, fc, 1)[0]) / flag_high
         if flag_slope > 0.004:   # flag must not be sharply rising
+            continue
+        if flag_slope < -0.006:  # overly steep downward flags are often failed reversals
             continue
         for plen in (5, 7, 10, 13):
             ps = n - flen - plen
@@ -558,6 +586,10 @@ def _det_cup_and_handle(
                 continue
             retrace = (rr - handle_low) / rr
             if retrace < 0.03 or retrace > 0.20:
+                continue
+            hx = np.arange(hlen, dtype=float)
+            handle_slope = float(np.polyfit(hx, h[ce:he], 1)[0]) / max(rr, 0.0001)
+            if handle_slope > 0.003:  # handle should drift sideways/down, not trend up
                 continue
             cup_vol_avg    = float(cv.mean())
             handle_vol_avg = float(hv.mean())
@@ -765,6 +797,7 @@ def _analyze_symbol(ticker: str, from_index: str, from_date: str, to_date: str,
     vol_ratio       = last_vol / avg_vol20
     candle_range    = last_high - last_low
     candle_body_pct = (last_close - last_low) / candle_range if candle_range > 0.01 else 0.5
+    ema20_ext_pct   = ((last_close / last_ema20) - 1.0) * 100.0 if last_ema20 > 0 else 0.0
     if vol_ratio < BK_VOL_RATIO_MIN:
         return None
     if not (BK_RSI_MIN <= last_rsi <= BK_RSI_MAX):
@@ -773,7 +806,11 @@ def _analyze_symbol(ticker: str, from_index: str, from_date: str, to_date: str,
         return None
     if not (last_close > last_ema20 > last_ema50):
         return None
+    if ema20_ext_pct > BK_MAX_EMA20_EXT_PCT:
+        return None
     if candle_body_pct < BK_CANDLE_BODY_MIN:
+        return None
+    if last_close < float(df["Open"].iloc[-1]):  # avoid red breakout candles
         return None
 
     # ── Weekly trend gate ──────────────────────────────────────────────────
@@ -831,6 +868,10 @@ def _analyze_symbol(ticker: str, from_index: str, from_date: str, to_date: str,
     pattern_name, pivot, pattern_quality, pattern_depth_pct, pattern_duration = patterns[0]
 
     breakout_pct   = ((last_close / pivot) - 1.0) * 100.0
+    if vol_ratio < BK_BREAKOUT_VOL_RATIO_MIN:
+        return None
+    if breakout_pct > BK_MAX_BREAKOUT_PCT:
+        return None
     pct_from_52w   = ((last_close / high_52w) - 1.0) * 100.0 if high_52w > 0 else -999.0
     is_52w_break   = pct_from_52w >= -0.5
     ema200_gap_pct = ((last_ema20 / last_ema200) - 1.0) * 100.0 if last_ema200 > 0 else 0.0
@@ -854,6 +895,8 @@ def _analyze_symbol(ticker: str, from_index: str, from_date: str, to_date: str,
     target_price   = max(candidates) if candidates else None
     rr_ratio       = ((target_price - last_close) / risk_amt
                       if (target_price and risk_amt > 0) else None)
+    if rr_ratio is None or rr_ratio < BK_MIN_RR_RATIO:
+        return None
 
     score = _calc_score(
         vol_ratio, last_rsi, last_adx,
