@@ -98,6 +98,18 @@ Filters candles where sellers pushed price back significantly before close. A cl
 the upper half of the day's range confirms buyers controlled the session.  
 *(Raised from 0.40 to 0.50.)*
 
+### 7. Close should not be over-extended above EMA20
+```
+(Close / EMA20 - 1) x 100 <= 12%
+```
+Avoids chasing stretched moves where pullback probability is high.
+
+### 8. Breakout candle should not be red
+```
+Close >= Open
+```
+Rejects weak breakout days where intraday sellers dominated the close.
+
 ---
 
 ## Stage 2 — Weekly Trend Gate (per-stock)
@@ -108,14 +120,14 @@ uptrend — not just a single-day daily spike against a weekly downtrend.
 Daily OHLCV is resampled to weekly bars (Friday close). Stocks with fewer than 20
 complete weekly bars are passed through without this check (insufficient history).
 
-### 7. Weekly close > weekly EMA(20)
+### 9. Weekly close > weekly EMA(20)
 ```
 weekly_close > EMA(weekly_close, 20)
 ```
 The stock must be trading above its 20-week moving average. This is the primary
 long-term trend filter — stocks below their 20-week EMA are in structural downtrends.
 
-### 8. Weekly RSI(14) >= 55
+### 10. Weekly RSI(14) >= 55
 Weekly momentum must be building. A weekly RSI below 55 means the multi-week trend is
 still weak or recovering — not the right environment for a high-conviction swing entry.
 
@@ -137,6 +149,17 @@ last_close >= pivot x 1.0025   (today closed >= 0.25% above the pivot)
 are retained. The 0.25% margin filters false breakouts where price merely touched the
 pivot and closed flat.  
 *(Raised from 0.10% to 0.25%.)*
+
+Additional breakout-quality checks after pivot confirmation:
+```
+Volume_today / AvgVolume20 >= 1.9
+Breakout percent above pivot <= 7%
+```
+These reduce low-energy breaks and avoid late entries that are already extended.
+
+Touch counting in Rectangle and Ascending Triangle now uses spaced touches
+(clustered consecutive bars are collapsed) to avoid overcounting repeated tests
+in a tight bar cluster.
 
 When multiple patterns match, the one with the highest quality score is used.
 
@@ -273,6 +296,12 @@ reward   = target - Close
 rr_ratio = reward / risk
 ```
 R:R >= 2.5:1 (green) is ideal for swing trades. R:R >= 1.5:1 (amber) is acceptable.
+
+Scanner qualification now requires:
+```
+rr_ratio >= 1.6
+```
+This removes low-conviction setups where downside is too close relative to likely upside.
 
 ---
 
