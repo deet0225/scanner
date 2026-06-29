@@ -654,11 +654,11 @@
     &nbsp;&mdash;&nbsp;
     <span style="color:var(--red);">&#9646; Day&minus;3: Large bearish candle (&ge;1% of price)</span>
     &nbsp;&#8594;&nbsp;
-    <span style="color:var(--yellow);">&#9644; Day&minus;2: Tiny star (&lt;35% of Day&minus;3 body)</span>
+    <span style="color:var(--yellow);">&#9644; Day&minus;2: Tiny star (&lt;30% of Day&minus;3 body)</span>
     &nbsp;&#8594;&nbsp;
-    <span style="color:var(--green);">&#9646; Day&minus;1: Strong bullish candle (&ge;50% penetration &amp; body &ge;50% of Day&minus;3)</span>
+    <span style="color:var(--green);">&#9646; Day&minus;1: Strong bullish candle (&ge;55% penetration &amp; body &ge;55% of Day&minus;3, close &ge; star high)</span>
     &nbsp;&mdash;&nbsp;
-    <strong>Quality gates:</strong> Liquidity &ge;3&nbsp;Cr &middot; Prior decline &ge;3% &middot; Volume &ge;1&times; avg
+    <strong>Quality gates:</strong> Liquidity &ge;4&nbsp;Cr &middot; Prior decline &ge;4% &middot; 3-bar Vol &ge;1.1&times; avg &middot; Day-3 Vol &ge;1.2&times; avg &middot; RSI &le;70
     &nbsp;&mdash;&nbsp;
     <strong>All 750 tickers</strong> (N500 + MC250) &middot; Last 3 bars only (no stale patterns)
     &nbsp;&mdash;&nbsp;
@@ -706,8 +706,8 @@
   <!-- Legend -->
   <div style="padding:8px 18px 14px;font-size:0.72rem;color:var(--text-muted);display:flex;gap:14px;flex-wrap:wrap;">
     <span style="font-weight:700;color:var(--text-primary);">Strict Pattern:</span>
-    <span>Day-1 &ge;1% bearish &rarr; Star &lt;35% &rarr; Day-3 &ge;50% penetration &amp; body &ge;50% of Day-1</span>
-    <span>&nbsp;&middot;&nbsp;Liq &ge;3Cr &middot; Prior drop &ge;3% &middot; Vol &ge;1&times; &middot; Last 3 bars only</span>
+    <span>Day-1 &ge;1% bearish &rarr; Star &lt;30% &rarr; Day-3 &ge;55% penetration &amp; body &ge;55% of Day-1 &amp; close &ge; star high</span>
+    <span>&nbsp;&middot;&nbsp;Liq &ge;4Cr &middot; Prior drop &ge;4% &middot; 3-bar Vol &ge;1.1&times; &middot; Day-3 Vol &ge;1.2&times; &middot; RSI &le;70 &middot; Last 3 bars only</span>
     <span style="margin-left:8px;">&#x25CF; <span class="from-n500">Nifty 500</span> &nbsp; &#x25CF; <span class="from-mc250">Microcap 250</span></span>
   </div>
 </div>
@@ -2409,9 +2409,9 @@ function mmomLoad() {
         pill.innerHTML =
           '&#127774; Strict Morning Star &middot; ' +
           '<span style="color:var(--red);">Day-1 &ge;1% bearish</span> &middot; ' +
-          '<span style="color:var(--yellow);">Star &lt;35%</span> &middot; ' +
-          '<span style="color:var(--green);">Day-3 &ge;50% pen + body &ge;50%</span> &middot; ' +
-          '<span style="color:var(--text-muted);">Liq 3Cr &middot; Drop-3% &middot; Vol 1&times;</span> &middot; ' +
+          '<span style="color:var(--yellow);">Star &lt;30%</span> &middot; ' +
+          '<span style="color:var(--green);">Day-3 &ge;55% pen + body &ge;55% + close &ge; star high</span> &middot; ' +
+          '<span style="color:var(--text-muted);">Liq 4Cr &middot; Drop-4% &middot; Vol 1.1&times; + Day-3 1.2&times; &middot; RSI &le;70</span> &middot; ' +
           '<span style="color:var(--green);font-weight:700;">&#9733;&#9733;&#9733; Score &ge;65 only</span>';
       }
 

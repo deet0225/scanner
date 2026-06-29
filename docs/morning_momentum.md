@@ -21,10 +21,11 @@ No regime check, no benchmark, no momentum/swing criteria — purely pattern + q
 
 | # | Filter | Threshold | Rationale |
 |---|--------|-----------|-----------|
-| Q1 | Avg Traded Value 20D | ≥ ₹3 Cr | Minimum liquidity for retail entry/exit |
-| Q2 | Prior decline | ≥ 3% trough in last 6 bars vs close ~10 bars prior | Confirms a genuine pullback, not a ranging stock |
+| Q1 | Avg Traded Value 20D | ≥ ₹4 Cr | Minimum liquidity for reliable entries/exits |
+| Q2 | Prior decline | ≥ 4% trough in last 6 bars vs close ~10 bars prior | Confirms a meaningful pullback, not shallow noise |
 | Q3 | Morning Star pattern | strict 3-candle criteria (see below) | The reversal signal itself |
-| Q4 | Volume confirmation | 3-bar avg volume ≥ 1.0× 20D avg | Buyer conviction behind the reversal |
+| Q4 | RSI overextension check | RSI-14 ≤ 70 | Avoids late-stage, overextended rebounds |
+| Q5 | Volume confirmation | 3-bar avg volume ≥ 1.1× 20D avg **and** Day-3 volume ≥ 1.2× 20D avg | Buyer conviction on reversal day + follow-through |
 
 ---
 
@@ -36,8 +37,8 @@ All criteria must be met simultaneously.
 | Day | Role | Requirement |
 |-----|------|-------------|
 | Day 1 | Large Bearish | body ≥ 1% of price  **AND**  body ≥ 0.3 × ATR-14 |
-| Day 2 | Indecision Star | \|close − open\| < 35% of Day-1 body |
-| Day 3 | Bullish Recovery | close > open  **AND**  close ≥ Day-1 close + 50% × Day-1 body  **AND**  body ≥ 50% of Day-1 body |
+| Day 2 | Indecision Star | \|close − open\| < 30% of Day-1 body |
+| Day 3 | Bullish Recovery | close > open  **AND**  close ≥ Day-1 close + 55% × Day-1 body  **AND**  body ≥ 55% of Day-1 body  **AND**  close ≥ max(Day-2 open, Day-2 close) |
 
 ### Pattern Quality Levels
 - **Minimum**: Day-3 closes above the midpoint of Day-1's body (50% penetration)

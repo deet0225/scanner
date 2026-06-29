@@ -196,10 +196,15 @@ MOM_TV_MIN_CR = 2.0    # Min avg daily traded value (Crores) — decent liquidit
 # ---------------------------------------------------------------------------
 # Morning Star quality filter thresholds (scan_morning_star only)
 # ---------------------------------------------------------------------------
-MS_TV_MIN_CR      = 3.0   # Min avg daily traded value in Crores (liquidity gate)
-MS_PRIOR_DROP_PCT = 3.0   # Pre-pattern decline: trough in last 6 bars must be at
-                           #   least 3% below the close ~10 bars before the pattern
-MS_VOL_CONFIRM_X  = 1.0   # Day-3 reversal area volume >= 100% of 20D avg volume
+MS_TV_MIN_CR      = 4.0   # Min avg daily traded value in Crores (liquidity gate)
+MS_PRIOR_DROP_PCT = 4.0   # Pre-pattern decline: trough in last 6 bars must be at
+                           #   least 4% below the close ~10 bars before the pattern
+MS_VOL_CONFIRM_X  = 1.10  # 3-bar reversal area volume >= 110% of 20D avg volume
+MS_DAY3_VOL_CONFIRM_X = 1.20   # Day-3 bullish candle volume >= 120% of 20D avg
+MS_MAX_STAR_RATIO = 0.30       # Day-2 star body must be <= 30% of Day-1 body
+MS_MIN_PENETRATION = 0.55      # Day-3 close must recover >= 55% into Day-1 body
+MS_MIN_DAY3_BODY_RATIO = 0.55  # Day-3 body must be >= 55% of Day-1 body
+MS_RSI_MAX = 70.0              # Reject late/overextended reversals
 
 # ---------------------------------------------------------------------------
 # Shared yfinance session -- verify=False so corporate-proxy self-signed certs
@@ -1561,18 +1566,22 @@ class StockScanner:
             if body1 < significant_body:
                 return None
 
-            # Day-2 star must be tiny relative to Day-1 (< 35%)
-            if body2 >= body1 * 0.35:
+            # Day-2 star must be tiny relative to Day-1
+            if body2 >= body1 * MS_MAX_STAR_RATIO:
                 return None
 
             # Day-3 must close at or above the midpoint of Day-1's body
             # midpoint = c1 + 50% × body1
-            if c3 < c1 + body1 * 0.50:
+            if c3 < c1 + body1 * MS_MIN_PENETRATION:
                 return None
 
             # Day-3 body must be strong — at least 50% of Day-1 body
             # This ensures genuine buying conviction, not a tiny green candle
-            if body3 < body1 * 0.50:
+            if body3 < body1 * MS_MIN_DAY3_BODY_RATIO:
+                return None
+
+            # Day-3 should reclaim the star body area; avoids weak closes.
+            if c3 < max(o2, c2):
                 return None
 
             # Pattern passes all strict criteria
@@ -3125,20 +3134,27 @@ class StockScanner:
                 if ms_info is None:
                     continue
 
-                # ── Q4. Volume on reversal >= MS_VOL_CONFIRM_X × 20D avg ────
+                # ── Q4. RSI overextension check (avoid late reversals) ─────
+                rsi_val = None
+                if len(c) >= RSI_PERIOD + 1:
+                    rsi_s   = self._rsi(c, RSI_PERIOD)
+                    rsi_val = round(float(rsi_s.iloc[-1]), 2)
+                    if rsi_val > MS_RSI_MAX:
+                        continue
+
+                # ── Q5. Volume confirmation on reversal area and Day-3 ──────
                 avg_vol    = 0.0
                 recent_vol = 0.0
+                day3_vol   = float(v.iloc[-1]) if len(v) else 0.0
                 if len(v) >= VOLUME_AVG_DAYS + 4:
                     avg_vol    = float(v.iloc[-(VOLUME_AVG_DAYS + 3):-3].mean())
                     recent_vol = float(v.iloc[-3:].mean())
                     if avg_vol > 0 and recent_vol < avg_vol * MS_VOL_CONFIRM_X:
                         continue
+                    if avg_vol > 0 and day3_vol < avg_vol * MS_DAY3_VOL_CONFIRM_X:
+                        continue
 
-                # ── RSI (compute for display + scoring only, no gate) ────────
-                rsi_val = None
-                if len(c) >= RSI_PERIOD + 1:
-                    rsi_s   = self._rsi(c, RSI_PERIOD)
-                    rsi_val = round(float(rsi_s.iloc[-1]), 2)
+                # RSI already computed above for gate and display/scoring.
 
                 # ── EMA-50 (compute for display + scoring only, no gate) ─────
                 price_vs_ema50 = None
