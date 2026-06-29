@@ -644,25 +644,8 @@
     <span class="hist-badge" id="mmom-hist-badge"></span>
     <button class="live-btn" id="mmom-live-btn" onclick="mmomClearDate()">&#9889; Live</button>
     <div id="mmom-criteria-pill" style="margin-left:auto;font-size:0.72rem;color:var(--text-muted);padding:5px 12px;">
-      Loading criteria&hellip;
+      &#127774; Strict Morning Star &middot; Day-1 &ge;1% bearish &middot; Star &lt;30% &middot; Day-3 &ge;55% pen + body &ge;55% + close &ge; star high &middot; Liq 4Cr &middot; Drop-4% &middot; Vol 1.1&times; + Day-3 1.2&times; &middot; RSI &le;70 &middot; &#9733;&#9733;&#9733; Score &ge;65 only
     </div>
-  </div>
-
-  <!-- Morning Star explanation card -->
-  <div style="margin:14px 18px 4px;padding:12px 18px;background:var(--criteria-card-bg);border:1px solid var(--border);border-radius:8px;font-size:0.78rem;color:var(--text-muted);">
-    <span style="font-weight:700;color:var(--text-primary);">&#127774; Strict Morning Star Pattern</span>
-    &nbsp;&mdash;&nbsp;
-    <span style="color:var(--red);">&#9646; Day&minus;3: Large bearish candle (&ge;1% of price)</span>
-    &nbsp;&#8594;&nbsp;
-    <span style="color:var(--yellow);">&#9644; Day&minus;2: Tiny star (&lt;30% of Day&minus;3 body)</span>
-    &nbsp;&#8594;&nbsp;
-    <span style="color:var(--green);">&#9646; Day&minus;1: Strong bullish candle (&ge;55% penetration &amp; body &ge;55% of Day&minus;3, close &ge; star high)</span>
-    &nbsp;&mdash;&nbsp;
-    <strong>Quality gates:</strong> Liquidity &ge;4&nbsp;Cr &middot; Prior decline &ge;4% &middot; 3-bar Vol &ge;1.1&times; avg &middot; Day-3 Vol &ge;1.2&times; avg &middot; RSI &le;70
-    &nbsp;&mdash;&nbsp;
-    <strong>All 750 tickers</strong> (N500 + MC250) &middot; Last 3 bars only (no stale patterns)
-    &nbsp;&mdash;&nbsp;
-    <strong style="color:var(--green);">&#9733;&#9733;&#9733; Showing High-Rating only (Star Score &ge; 65)</strong>
   </div>
 
   <div class="main-card">
@@ -2407,12 +2390,7 @@ function mmomLoad() {
       var pill = document.getElementById('mmom-criteria-pill');
       if (pill) {
         pill.innerHTML =
-          '&#127774; Strict Morning Star &middot; ' +
-          '<span style="color:var(--red);">Day-1 &ge;1% bearish</span> &middot; ' +
-          '<span style="color:var(--yellow);">Star &lt;30%</span> &middot; ' +
-          '<span style="color:var(--green);">Day-3 &ge;55% pen + body &ge;55% + close &ge; star high</span> &middot; ' +
-          '<span style="color:var(--text-muted);">Liq 4Cr &middot; Drop-4% &middot; Vol 1.1&times; + Day-3 1.2&times; &middot; RSI &le;70</span> &middot; ' +
-          '<span style="color:var(--green);font-weight:700;">&#9733;&#9733;&#9733; Score &ge;65 only</span>';
+          '&#127774; Strict Morning Star &middot; Day-1 &ge;1% bearish &middot; Star &lt;30% &middot; Day-3 &ge;55% pen + body &ge;55% + close &ge; star high &middot; Liq 4Cr &middot; Drop-4% &middot; Vol 1.1&times; + Day-3 1.2&times; &middot; RSI &le;70 &middot; &#9733;&#9733;&#9733; Score &ge;65 only';
       }
 
       renderMorningMom(filtered, j);
