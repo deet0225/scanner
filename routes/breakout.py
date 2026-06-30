@@ -83,6 +83,8 @@ BK_BREAKOUT_VOL_RATIO_MIN = 1.9   # breakout-day volume confirmation near pivot 
 BK_MAX_BREAKOUT_PCT = 7.0         # avoid chasing already-extended breakouts
 BK_MAX_EMA20_EXT_PCT = 12.0       # close should not be too stretched above EMA20
 BK_MIN_RR_RATIO = 1.6             # minimum reward:risk for swing suitability
+BK_SCORE_RAW_MAX = 173.4          # theoretical max of raw composite score before normalization
+BK_MIN_SCORE = 65.0               # hide low-quality setups from Breakout tab
 BK_MIN_ROWS        = 120    # minimum OHLCV rows required
 BK_MAX_WORKERS     = 6
 
@@ -342,6 +344,7 @@ _scan_state: dict = {
         "min_price":       BK_MIN_PRICE,
         "max_ema20_ext_pct": BK_MAX_EMA20_EXT_PCT,
         "min_rr_ratio":    BK_MIN_RR_RATIO,
+        "min_score":       BK_MIN_SCORE,
         "weekly_rsi_min":  BK_WEEKLY_RSI_MIN,
     },
 }
@@ -615,32 +618,37 @@ def _calc_score(
     is_52w_break: bool, candle_body_pct: float, pct_from_52w: float,
     ema200_gap_pct: float, pattern_quality: float, breakout_pct: float,
 ) -> float:
-    """Composite score 0–160+ for swing-trade setup quality."""
-    score = 0.0
+    """Composite score normalized to a 0-100 range for swing-trade setup quality."""
+    raw_score = 0.0
     # 1. Volume surge (max 40)
-    score += min(max(vol_ratio - 1.0, 0.0), 4.0) * 10.0
+    raw_score += min(max(vol_ratio - 1.0, 0.0), 4.0) * 10.0
     # 2. 52-week high (max 30)
     if is_52w_break:
-        score += 30.0
+        raw_score += 30.0
     else:
-        score += max(0.0, 10.0 + pct_from_52w * 1.5)
+        raw_score += max(0.0, 10.0 + pct_from_52w * 1.5)
     # 3. RSI sweet spot 60-72 (max ~20)
     rsi_pts = max(0.0, rsi - 55.0) * 1.2
     if rsi > 72:
         rsi_pts -= (rsi - 72) * 2.5
-    score += max(0.0, rsi_pts)
+    raw_score += max(0.0, rsi_pts)
     # 4. ADX trend strength (max 32)
-    score += min(max(adx - 18.0, 0.0), 32.0) * 1.0
+    raw_score += min(max(adx - 18.0, 0.0), 32.0) * 1.0
     # 5. Candle body quality (max 10)
-    score += candle_body_pct * 10.0
+    raw_score += candle_body_pct * 10.0
     # 6. Pattern quality (max 25)
-    score += pattern_quality * 25.0
+    raw_score += pattern_quality * 25.0
     # 7. Breakout margin above pivot (max 10)
-    score += min(max(breakout_pct, 0.0), 5.0) * 2.0
+    raw_score += min(max(breakout_pct, 0.0), 5.0) * 2.0
     # 8. EMA200 alignment (max 6)
     if ema200_gap_pct > 0:
-        score += min(ema200_gap_pct, 15.0) * 0.4
-    return round(score, 2)
+        raw_score += min(ema200_gap_pct, 15.0) * 0.4
+
+    if BK_SCORE_RAW_MAX <= 0:
+        return 0.0
+    normalized = (raw_score / BK_SCORE_RAW_MAX) * 100.0
+    normalized = max(0.0, min(100.0, normalized))
+    return round(normalized, 2)
 
 
 def _check_bk_regime(from_date: str, to_date: str) -> "tuple[bool, str]":
@@ -986,6 +994,7 @@ def _run_breakout_scan_blocking(target_date: "_date_type | None" = None) -> dict
     mc   = _scan_universe(NIFTY_MICROCAP250_TICKERS, "Microcap 250", from_date_s, to_date_s, live_quotes, target_date)
 
     all_rows = sorted(n500 + mc, key=lambda x: x.get("score", 0.0), reverse=True)
+    all_rows = [row for row in all_rows if float(row.get("score", 0.0)) >= BK_MIN_SCORE]
     return {
         "stocks":         all_rows[:100],
         "total":          len(all_rows),
