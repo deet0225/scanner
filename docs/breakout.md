@@ -21,6 +21,8 @@ immediately — later (expensive) stages only run when all earlier stages pass.
 Results are sorted by composite score; the highest-quality pattern is selected when
 multiple patterns match the same stock.
 
+After scoring, only stocks with composite score >= 100 are returned to the Breakout tab so low-quality setups are hidden from the UI.
+
 ---
 
 ## Stage 0 — Market Regime Gate
@@ -317,24 +319,34 @@ strongest breakouts — all prior sellers are underwater, supply overhang is min
 
 ## Scoring Formula
 
-Stocks passing all gates are ranked by composite score (0-160+):
+Stocks passing all gates are ranked by a normalized composite score.
 
-| Component | Calculation | Max pts |
+Raw score is first computed on a 173.40-point scale, then normalized to 0-100:
+
+```
+score = (raw_score / 173.40) x 100
+```
+
+Current score range:
+- Theoretical formula range: 0.00 to 100.00
+- Effective Breakout tab display range: 65.00 to 100.00 (`BK_MIN_SCORE = 65`)
+
+| Component | Calculation | Raw max pts |
 |-----------|-------------|---------|
 | Volume surge | `min(vol_ratio - 1, 4.0) x 10` | 40 |
 | 52W high | `+30` if `is_52w_break`, else `max(0, 10 + pct_from_52w x 1.5)` | 30 |
-| RSI quality | `max(0, (rsi - 55) x 1.2)` minus `(rsi - 72) x 2.5` if RSI > 72 | ~20 |
+| RSI quality | `max(0, (rsi - 55) x 1.2)` minus `(rsi - 72) x 2.5` if RSI > 72 | 20.4 |
 | ADX strength | `min(adx - 18, 32) x 1.0` | 32 |
 | Candle body | `candle_body_pct x 10` | 10 |
 | **Pattern quality** | `pattern_quality x 25` | **25** |
 | Breakout margin | `min(breakout_pct, 5.0) x 2.0` | 10 |
 | EMA200 alignment | `min(ema20_vs_ema200_gap%, 15) x 0.4` | 6 |
 
-**Interpretation:**
-- **Score > 90**: Excellent pattern + strong momentum. High-confidence swing trade.
-- **Score 70-90**: Good pattern with solid confirmation. Standard swing trade entry.
-- **Score 50-70**: Pattern detected but weaker confirmation. Review manually.
-- **Score < 50**: Marginal setup; pass or wait for better entry.
+**Interpretation (current scanner settings):**
+- **Score >= 85**: Elite setup. Strong pattern + momentum + trend confirmation.
+- **Score 75-84.99**: High-quality setup. Good risk/reward and confirmation.
+- **Score 65-74.99**: Minimum accepted quality. Tradable but needs manual context check.
+- **Score < 65**: Hidden from Breakout tab by quality filter.
 
 ---
 
@@ -365,6 +377,7 @@ BK_ADX_MIN         = 22.0   # minimum ADX(14)
 BK_MIN_PRICE       = 20.0   # minimum stock price (Rs.)
 BK_CANDLE_BODY_MIN = 0.50   # minimum candle close position in day's range (top 50%)
 BK_WEEKLY_RSI_MIN  = 55.0   # minimum weekly RSI(14)
+BK_MIN_SCORE       = 65.0   # minimum score required to display in Breakout tab
 BK_MIN_ROWS        = 120    # minimum OHLCV rows needed
 BK_MAX_WORKERS     = 6      # parallel scan threads
 ```
