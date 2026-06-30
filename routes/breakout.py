@@ -84,7 +84,7 @@ BK_MAX_BREAKOUT_PCT = 7.0         # avoid chasing already-extended breakouts
 BK_MAX_EMA20_EXT_PCT = 12.0       # close should not be too stretched above EMA20
 BK_MIN_RR_RATIO = 1.6             # minimum reward:risk for swing suitability
 BK_SCORE_RAW_MAX = 173.4          # theoretical max of raw composite score before normalization
-BK_MIN_SCORE = 65.0               # hide low-quality setups from Breakout tab
+BK_MIN_SCORE = 60.0               # hide low-quality setups from Breakout tab
 BK_MIN_ROWS        = 120    # minimum OHLCV rows required
 BK_MAX_WORKERS     = 6
 
