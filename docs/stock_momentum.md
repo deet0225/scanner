@@ -34,6 +34,10 @@ pass — not stocks that briefly touch a threshold and reverse.
 | 8 | EMA alignment | Price > EMA-20 > EMA-50 | Clean uptrend structure on daily chart |
 | 9 | MACD(12,26,9) line | > Signal line AND > 0 | Bullish zone, trend still live |
 | 9b | MACD histogram contraction | < 30% shrinkage vs prev bar | Momentum pulse still accelerating |
+| 10 | Day gain (scan candle) | >= +1.5% | Ensures strong price expansion on the selected day |
+| 10b | Close-in-range | >= 70% | Close near day high confirms buyer control |
+| 10c | Day range | >= 2.0% of prev close | Rejects low-energy/noise candles |
+| 10d | Candle direction | Close >= Open | Rejects weak red closes despite momentum metrics |
 
 > **No** market cap, D/E ratio, HH20 breakout, closing range, ATR ceiling, weekly EMA
 > threshold, or any other fundamental / swing-entry filter is applied.

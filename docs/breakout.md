@@ -21,7 +21,7 @@ immediately — later (expensive) stages only run when all earlier stages pass.
 Results are sorted by composite score; the highest-quality pattern is selected when
 multiple patterns match the same stock.
 
-After scoring, only stocks with composite score >= 100 are returned to the Breakout tab so low-quality setups are hidden from the UI.
+After scoring, only stocks with composite score >= 65 are returned to the Breakout tab so low-quality setups are hidden from the UI.
 
 ---
 
@@ -92,19 +92,20 @@ Close > EMA(20) > EMA(50)
 ```
 Short- and medium-term trend alignment. Both EMAs must be ordered bullishly.
 
-### 6. Bullish Candle Close (top 50% of range)
+### 6. Close should not be over-extended above EMA20
+```
+(Close / EMA20 - 1) x 100 <= 12%
+```
+Avoids chasing stretched moves where pullback probability is high.  
+Checked **before** candle body so the cheap arithmetic test drops extended stocks before the range calculation.
+
+### 7. Bullish Candle Close (top 50% of range)
 ```
 candle_body_pct = (Close - Low) / (High - Low)  >= 0.50
 ```
 Filters candles where sellers pushed price back significantly before close. A close in
 the upper half of the day's range confirms buyers controlled the session.  
 *(Raised from 0.40 to 0.50.)*
-
-### 7. Close should not be over-extended above EMA20
-```
-(Close / EMA20 - 1) x 100 <= 12%
-```
-Avoids chasing stretched moves where pullback probability is high.
 
 ### 8. Breakout candle should not be red
 ```
@@ -329,7 +330,7 @@ score = (raw_score / 173.40) x 100
 
 Current score range:
 - Theoretical formula range: 0.00 to 100.00
-- Effective Breakout tab display range: 60.00 to 100.00 (`BK_MIN_SCORE = 60`)
+- Effective Breakout tab display range: 65.00 to 100.00 (`BK_MIN_SCORE = 65`)
 
 | Component | Calculation | Raw max pts |
 |-----------|-------------|---------|
@@ -345,8 +346,8 @@ Current score range:
 **Interpretation (current scanner settings):**
 - **Score >= 85**: Elite setup. Strong pattern + momentum + trend confirmation.
 - **Score 75-84.99**: High-quality setup. Good risk/reward and confirmation.
-- **Score 60-74.99**: Minimum accepted quality. Tradable but needs manual context check.
-- **Score < 60**: Hidden from Breakout tab by quality filter.
+- **Score 65-74.99**: Minimum accepted quality. Tradable but needs manual context check.
+- **Score < 65**: Hidden from Breakout tab by quality filter.
 
 ---
 
@@ -369,15 +370,20 @@ Current score range:
 ## Parameters Reference
 
 ```python
-BK_PIVOT_MIN_PCT   = 0.25   # min % today's close must be above pattern pivot
-BK_VOL_RATIO_MIN   = 1.6    # minimum vol / 20D-avg-vol ratio
-BK_RSI_MIN         = 55.0   # minimum daily RSI(14)
-BK_RSI_MAX         = 80.0   # maximum daily RSI(14)
-BK_ADX_MIN         = 22.0   # minimum ADX(14)
-BK_MIN_PRICE       = 20.0   # minimum stock price (Rs.)
-BK_CANDLE_BODY_MIN = 0.50   # minimum candle close position in day's range (top 50%)
-BK_WEEKLY_RSI_MIN  = 55.0   # minimum weekly RSI(14)
-BK_MIN_SCORE       = 60.0   # minimum score required to display in Breakout tab
-BK_MIN_ROWS        = 120    # minimum OHLCV rows needed
-BK_MAX_WORKERS     = 6      # parallel scan threads
+BK_PIVOT_MIN_PCT          = 0.25   # min % today's close must be above pattern pivot
+BK_VOL_RATIO_MIN          = 1.6    # minimum vol / 20D-avg-vol ratio (fast gate)
+BK_RSI_MIN                = 55.0   # minimum daily RSI(14)
+BK_RSI_MAX                = 80.0   # maximum daily RSI(14)
+BK_ADX_MIN                = 22.0   # minimum ADX(14)
+BK_MIN_PRICE              = 20.0   # minimum stock price (Rs.)
+BK_MAX_EMA20_EXT_PCT      = 12.0   # max % close can be above EMA20 (not overextended)
+BK_CANDLE_BODY_MIN        = 0.50   # minimum candle close position in day's range (top 50%)
+BK_WEEKLY_RSI_MIN         = 55.0   # minimum weekly RSI(14)
+BK_BREAKOUT_VOL_RATIO_MIN = 1.9    # breakout-confirmation volume near pivot (post-pattern gate)
+BK_MAX_BREAKOUT_PCT       = 7.0    # max % close can be above pivot (avoid chasing)
+BK_MIN_RR_RATIO           = 1.6    # minimum reward:risk ratio for swing suitability
+BK_SCORE_RAW_MAX          = 173.4  # theoretical raw-score ceiling (normalisation divisor)
+BK_MIN_SCORE              = 65.0   # minimum normalised score to display in Breakout tab
+BK_MIN_ROWS               = 120    # minimum OHLCV rows needed
+BK_MAX_WORKERS            = 6      # parallel scan threads
 ```

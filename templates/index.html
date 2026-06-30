@@ -558,7 +558,7 @@
     <div class="card-head">
       <div style="font-weight:600;font-size:0.92rem;">
         <i class="bi bi-lightning-charge-fill text-warning me-2"></i>
-        Stock Momentum &mdash; NSE 500 + Microcap 250 &mdash; Strict High-Momentum &mdash; Technicals Only
+        Stock Momentum &mdash; NSE 500 + Microcap 250 &mdash; Very Strong Daily Price Action &mdash; Technicals Only
       </div>
       <span class="badge bg-warning text-dark" id="mom-result-count" style="font-size:0.75rem;">0 stocks</span>
     </div>
@@ -577,6 +577,7 @@
         <th title="RSI-14 daily / Weekly RSI-14">RSI&thinsp;14&thinsp;/&thinsp;W</th>
         <th title="ADX-14 — directional strength">ADX&thinsp;14</th>
         <th title="20-Day return vs benchmark index">20D&thinsp;Ret</th>
+        <th title="Day Price Action: % gain on scan day / close-in-range (how close to day high the candle closed — all 3 gates must pass: green candle, day&thinsp;≥1.5%, close&thinsp;≥70%&thinsp;in&thinsp;range)">Day&thinsp;PA</th>
         <th title="Relative Strength vs Nifty 500 — how much more (%) this stock gained vs the index over the last 20 trading days. RS Ratio > 1 = market leader. Higher = stronger momentum.">RS&thinsp;vs&thinsp;Index</th>
         <th title="Volume Z-score / Relative Volume Percentile">Vol&thinsp;Z&thinsp;/&thinsp;RVPct</th>
         <th title="% vs EMA-20 / EMA-20 vs EMA-50">EMA&thinsp;20/50</th>
@@ -584,7 +585,7 @@
         <th title="Sector">Sector</th>
         <th title="Pure Momentum Score (RSI 30 + RS 25 + ADX 20 + MACD 10 + wRSI 10 + Vol 5 = max 100)">Mom Score</th>
       </tr></thead>
-      <tbody id="mom-results-body"><tr><td colspan="14">
+      <tbody id="mom-results-body"><tr><td colspan="15">
         <div class="empty-state">
           <i class="bi bi-lightning-charge fs-2 d-block mb-2" style="color:var(--text-muted);"></i>
           Click <strong>&#128200; Stock Momentum</strong> tab or <strong>Refresh</strong> to load.
@@ -595,13 +596,16 @@
 
   <!-- Legend -->
   <div style="padding:8px 18px 14px;font-size:0.72rem;color:var(--text-muted);display:flex;gap:14px;flex-wrap:wrap;">
-    <span style="font-weight:700;color:var(--text-primary);">Momentum Filters (all must pass):</span>
+    <span style="font-weight:700;color:var(--text-primary);">Momentum + Price Action Filters (all must pass):</span>
     <span>RSI&#8805;<span id="mom-leg-rsi" style="color:var(--green);">58</span> &amp; rising</span>
     <span>wRSI&#8805;<span id="mom-leg-wrsi" style="color:var(--green);">55</span> &amp; rising</span>
     <span>ADX&#8805;<span id="mom-leg-adx" style="color:var(--green);">20</span> &amp; rising</span>
     <span>VolZ&#8805;<span id="mom-leg-volz" style="color:var(--green);">0.6</span></span>
     <span>RS&#8805;<span id="mom-leg-rs" style="color:var(--green);">+2.5%</span></span>
     <span>20D&#8805;<span id="mom-leg-ret" style="color:var(--green);">+3%</span></span>
+    <span>Day&#8805;<span id="mom-leg-daychg" style="color:var(--green);">+1.5%</span></span>
+    <span>Close in range&#8805;<span id="mom-leg-closepos" style="color:var(--green);">70%</span></span>
+    <span>Range&#8805;<span id="mom-leg-range" style="color:var(--green);">2.0%</span></span>
     <span style="color:var(--blue);">MACD&gt;0 &amp; expanding</span>
     <span style="margin-left:8px;">Liq min: <span style="color:var(--green);">&#8377;2&thinsp;Cr</span></span>
     <span style="margin-left:8px;">&#x25CF; <span class="from-n500">Nifty 500</span> &nbsp; &#x25CF; <span class="from-mc250">Microcap 250</span></span>
@@ -1836,6 +1840,15 @@ function momLoad() {
         document.getElementById('mom-leg-volz').textContent = c.volz_min;
         document.getElementById('mom-leg-rs').textContent   = '+' + c.rs_min + '%';
         document.getElementById('mom-leg-ret').textContent  = '+' + c.ret20_min + '%';
+        if (c.day_chg_min != null) {
+          document.getElementById('mom-leg-daychg').textContent = '+' + c.day_chg_min + '%';
+        }
+        if (c.close_pos_min_pct != null) {
+          document.getElementById('mom-leg-closepos').textContent = c.close_pos_min_pct + '%';
+        }
+        if (c.day_range_min != null) {
+          document.getElementById('mom-leg-range').textContent = c.day_range_min + '%';
+        }
         var pill = document.getElementById('mom-criteria-pill');
         if (pill) {
           pill.innerHTML =
@@ -1846,6 +1859,9 @@ function momLoad() {
             ' &middot; RS&ge;+' + c.rs_min + '% vs Idx' +
             ' &middot; 20D&ge;+' + c.ret20_min + '%' +
             (c.ret5_min != null ? ' &middot; 5D&ge;+' + c.ret5_min + '%' : '') +
+            (c.day_chg_min != null ? ' &middot; Day&ge;+' + c.day_chg_min + '%' : '') +
+            (c.close_pos_min_pct != null ? ' &middot; Close-in-range&ge;' + c.close_pos_min_pct + '%' : '') +
+            (c.day_range_min != null ? ' &middot; Range&ge;' + c.day_range_min + '%' : '') +
             ' &middot; <span style="color:var(--blue);">Price&gt;EMA20&gt;EMA50</span>' +
             ' &middot; Liq&ge;&#8377;' + c.tv_min_cr + 'Cr';
         }
@@ -1858,7 +1874,7 @@ function momLoad() {
       if (btn)    btn.classList.remove('scanning');
       if (loadEl) loadEl.style.display = 'none';
       document.getElementById('mom-results-body').innerHTML =
-        '<tr><td colspan="14"><div class="empty-state">' +
+        '<tr><td colspan="15"><div class="empty-state">' +
         '<i class="bi bi-exclamation-triangle fs-2 d-block mb-2 text-danger"></i>' +
         'Error: ' + err + '</div></td></tr>';
     });
@@ -1886,7 +1902,7 @@ function renderMomentum(stocks, meta) {
         'No momentum stocks found' +
         (asOf ? ' for ' + asOf : ' today') + '.<br>' +
         '<small style="color:var(--text-muted);">Try a different date or check back after the next trading session.</small>';
-    tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state">' + msg + '</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="15"><div class="empty-state">' + msg + '</div></td></tr>';
     return;
   }
 
@@ -2057,6 +2073,34 @@ function renderMomentum(stocks, meta) {
       '<span style="font-family:monospace;font-weight:700;font-size:1rem;color:' + msCol + ';">' + ms.toFixed(1) + '</span>' +
       '<div class="fund-bar-wrap"><div class="fund-bar-fill" style="width:' + msPct + '%;"></div></div>';
 
+    // Day PA — very-strong daily price action cell
+    // Shows: day gain %, close-in-range %, day range % (all 3 gates must pass)
+    var dayChg    = s.day_change_pct      != null ? Number(s.day_change_pct)      : null;
+    var closePos  = s.close_in_range_pct  != null ? Number(s.close_in_range_pct)  : null;
+    var dayRange  = s.day_range_pct       != null ? Number(s.day_range_pct)       : null;
+    var dayPaCell = '--';
+    if (dayChg != null) {
+      var dChgCol  = dayChg >= 3.0 ? 'var(--green)' : dayChg >= 1.5 ? 'var(--blue)' : 'var(--yellow)';
+      var cpCol    = closePos != null ? (closePos >= 85 ? 'var(--green)' : closePos >= 70 ? 'var(--blue)' : 'var(--yellow)') : 'var(--text-muted)';
+      var daTip    = 'Day Price Action (scan day quality)\n' +
+        'Day Gain: +' + dayChg.toFixed(2) + '% (green candle, min +1.5%)\n' +
+        (closePos != null ? 'Close in Range: ' + closePos.toFixed(1) + '% from low (min 70% = near day high)\n' : '') +
+        (dayRange != null ? 'Day Range: ' + dayRange.toFixed(2) + '% of prev close (min 2.0%)\n' : '') +
+        '\nAll 3 gates must pass simultaneously.';
+      dayPaCell =
+        '<span title="' + daTip + '" style="cursor:help;">' +
+          '<span style="color:' + dChgCol + ';font-family:monospace;font-weight:700;font-size:0.92rem;">' +
+            '&#9650;&thinsp;+' + dayChg.toFixed(2) + '%' +
+          '</span>' +
+          (closePos != null
+            ? '<div class="sector-sub" style="color:' + cpCol + ';font-size:0.68rem;margin-top:1px;">Close: ' + closePos.toFixed(1) + '% in range</div>'
+            : '') +
+          (dayRange != null
+            ? '<div class="sector-sub" style="font-size:0.65rem;color:var(--text-muted);">Range: ' + dayRange.toFixed(2) + '%</div>'
+            : '') +
+        '</span>';
+    }
+
     var ticker = s.display_ticker || (s.ticker || '').replace('.NS','');
 
 
@@ -2067,17 +2111,18 @@ function renderMomentum(stocks, meta) {
         '<div class="ticker-sym">' + ticker + '</div>' +
         ((s.industry || s.sector) ? '<div class="company-name">' + (s.industry || s.sector) + '</div>' : '') +
       '</td>' +
-      '<td>' + priceStr + '</td>' +
-      '<td>' + slCell   + '</td>' +
-      '<td>' + rsiCell  + '</td>' +
-      '<td>' + adxCell  + '</td>' +
-      '<td>' + r20Cell  + '</td>' +
-      '<td>' + rsCell   + '</td>' +
-      '<td>' + volCell  + '</td>' +
-      '<td>' + emaCell  + '</td>' +
-      '<td>' + macdCell + '</td>' +
-      '<td>' + secCell  + '</td>' +
-      '<td>' + msCell   + '</td>' +
+      '<td>' + priceStr  + '</td>' +
+      '<td>' + slCell    + '</td>' +
+      '<td>' + rsiCell   + '</td>' +
+      '<td>' + adxCell   + '</td>' +
+      '<td>' + r20Cell   + '</td>' +
+      '<td>' + dayPaCell + '</td>' +
+      '<td>' + rsCell    + '</td>' +
+      '<td>' + volCell   + '</td>' +
+      '<td>' + emaCell   + '</td>' +
+      '<td>' + macdCell  + '</td>' +
+      '<td>' + secCell   + '</td>' +
+      '<td>' + msCell    + '</td>' +
       '</tr>';
   }).join('');
 }

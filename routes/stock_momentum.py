@@ -24,6 +24,7 @@ from config import SCAN_INTERVAL_MINUTES, AUTO_RESCAN
 from scanner import (
     MOM_RSI_MIN, MOM_WRSI_MIN, MOM_ADX_MIN,
     MOM_VOLZ_MIN, MOM_RS_MIN, MOM_RET20_MIN, MOM_RET5_MIN, MOM_TV_MIN_CR,
+    MOM_DAY_CHG_MIN, MOM_CLOSE_POS_MIN, MOM_DAY_RANGE_MIN,
 )
 from routes.utils import _validate_date_param, _enrich_with_industry
 
@@ -39,6 +40,9 @@ _MOM_RS_MIN    = MOM_RS_MIN
 _MOM_RET20_MIN = MOM_RET20_MIN
 _MOM_RET5_MIN  = MOM_RET5_MIN
 _MOM_TVMIN_CR  = MOM_TV_MIN_CR
+_MOM_DAY_CHG_MIN = MOM_DAY_CHG_MIN
+_MOM_CLOSE_POS_MIN = MOM_CLOSE_POS_MIN
+_MOM_DAY_RANGE_MIN = MOM_DAY_RANGE_MIN
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +257,9 @@ async def get_stock_momentum(
             "ret20_min":  _MOM_RET20_MIN,
             "ret5_min":   _MOM_RET5_MIN,
             "tv_min_cr":  _MOM_TVMIN_CR,
+            "day_chg_min": _MOM_DAY_CHG_MIN,
+            "close_pos_min_pct": round(_MOM_CLOSE_POS_MIN * 100, 1),
+            "day_range_min": _MOM_DAY_RANGE_MIN,
             "macd":       "MACD(12,26,9) > Signal AND MACD > 0",
         },
     })

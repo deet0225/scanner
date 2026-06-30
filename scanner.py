@@ -192,6 +192,9 @@ MOM_RS_MIN    = 2.5    # RS outperformance vs benchmark (%) — emerging leader 
 MOM_RET20_MIN = 3.0    # 20-day absolute return floor (%) — stock is moving (was 5.0)
 MOM_RET5_MIN  = 0.0    # 5-day return must be non-negative (not rolling over)
 MOM_TV_MIN_CR = 2.0    # Min avg daily traded value (Crores) — decent liquidity
+MOM_DAY_CHG_MIN = 1.5  # Minimum day gain (%) on scan candle — avoid weak/flat closes
+MOM_CLOSE_POS_MIN = 0.70  # Close location in candle range: (C-L)/(H-L) must be >= 70%
+MOM_DAY_RANGE_MIN = 2.0  # Minimum intraday range (%) of prev close — ensures expansion day
 
 # ---------------------------------------------------------------------------
 # Morning Star quality filter thresholds (scan_morning_star only)
@@ -1625,6 +1628,7 @@ class StockScanner:
           8.  Price > EMA-20 > EMA-50                   clean uptrend structure
           9.  MACD line > Signal AND MACD > 0           bullish zone confirmed
           9b. MACD histogram not contracting > 30%      momentum still accelerating
+          10. Strong daily price action                  bullish close near day high
 
         scan_date: when provided, df is sliced to <= scan_date before any
           computation, the last candle's date is validated for freshness
@@ -1651,6 +1655,8 @@ class StockScanner:
         c   = df["Close"].dropna()
         v   = df["Volume"].reindex(c.index).fillna(0)
         lo  = df["Low"].reindex(c.index)
+        hi  = df["High"].reindex(c.index)
+        op  = df["Open"].reindex(c.index)
 
         if len(c) < MIN_DATA_ROWS:
             return None
@@ -1712,6 +1718,8 @@ class StockScanner:
                         c  = df["Close"].dropna()
                         v  = df["Volume"].reindex(c.index).fillna(0)
                         lo = df["Low"].reindex(c.index)
+                        hi = df["High"].reindex(c.index)
+                        op = df["Open"].reindex(c.index)
                         cp = bse_row["close"]
 
         # 1. Liquidity — very relaxed floor (0.6 Cr vs 3 Cr for swing)
@@ -1874,6 +1882,32 @@ class StockScanner:
                     if h_prev > 0 and macd_hist < h_prev * 0.70:
                         return None   # histogram contracting > 30% — momentum fading
 
+        # 10. Very-strong daily price action filter (scan day quality gate):
+        #   a) green candle (close >= open)
+        #   b) day gain >= MOM_DAY_CHG_MIN
+        #   c) close in top MOM_CLOSE_POS_MIN of candle range
+        #   d) intraday range >= MOM_DAY_RANGE_MIN
+        if len(c) < 2:
+            return None
+        prev_close = float(c.iloc[-2])
+        if prev_close <= 0:
+            return None
+        co = float(op.iloc[-1])
+        ch = float(hi.iloc[-1])
+        cl = float(lo.iloc[-1])
+        day_chg_pct = (cp / prev_close - 1.0) * 100.0
+        day_range_pct = ((ch - cl) / prev_close) * 100.0 if ch >= cl else 0.0
+        close_pos = ((cp - cl) / (ch - cl)) if ch > cl else 1.0
+
+        if cp < co:
+            return None
+        if day_chg_pct < MOM_DAY_CHG_MIN:
+            return None
+        if close_pos < MOM_CLOSE_POS_MIN:
+            return None
+        if day_range_pct < MOM_DAY_RANGE_MIN:
+            return None
+
         # --- All filters passed; compute display-only metrics ---
 
         # EMA20 / EMA50 already computed above (for filter 8) — reuse
@@ -1934,6 +1968,9 @@ class StockScanner:
             "rs_ratio":       round(rs_ratio, 4),
             "rs_outperf_pct": round(rs_outperf * 100, 2),
             "avg_tv_20d_cr":  round(avg_tv_20d / 1e7, 2),
+            "day_change_pct": round(day_chg_pct, 2),
+            "close_in_range_pct": round(close_pos * 100.0, 1),
+            "day_range_pct": round(day_range_pct, 2),
             "morning_star":   morning_star,   # True if 3-candle Morning Star pattern detected
             "macd":           round(macd_line,   4) if macd_line   is not None else None,
             "macd_signal":    round(macd_signal, 4) if macd_signal is not None else None,
